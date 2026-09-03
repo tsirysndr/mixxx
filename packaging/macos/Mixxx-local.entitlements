@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <!-- Entitlements for local (non App Store) builds: no App Sandbox,
+         so the app can read its own caches (e.g. the Subsonic download
+         cache) and arbitrary music folders without per-file permission
+         dialogs. Only the hardened-runtime allowances remain.
+      -->
+    <!-- Allow interacting with the microphone -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+    <!-- Allow execution of JIT-compiled code
+         This is necessary for controller mappings that use Qt's JavaScript JIT compiler.
+      -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <!-- Allow unsigned executable memory
+         This is necessary for controller mappings that use Qt's JavaScript JIT compiler.
+      -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+  </dict>
+</plist>

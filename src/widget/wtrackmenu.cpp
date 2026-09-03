@@ -2852,12 +2852,6 @@ void WTrackMenu::slotAddToAutoDJReplace() {
 }
 
 void WTrackMenu::addToAutoDJ(PlaylistDAO::AutoDJSendLoc loc) {
-    const TrackIdList trackIds = getTrackIds();
-    if (trackIds.empty()) {
-        qWarning() << "No tracks selected for AutoDJ";
-        return;
-    }
-
     // If the "Replace" action was clicked and there are tracks in the
     // AutoDJ queue, ask for confirmation.
     PlaylistDAO& playlistDao = m_pLibrary->trackCollectionManager()
@@ -2886,6 +2880,31 @@ void WTrackMenu::addToAutoDJ(PlaylistDAO::AutoDJSendLoc loc) {
         if (notAgainCB.isChecked()) {
             s_confirmForAutoDjReplace = false;
         }
+    }
+
+    if (m_pTrackModel && !m_trackIndexList.isEmpty()) {
+        TrackModel::AutoDJLocation modelLoc = TrackModel::AutoDJLocation::Bottom;
+        switch (loc) {
+        case PlaylistDAO::AutoDJSendLoc::TOP:
+            modelLoc = TrackModel::AutoDJLocation::Top;
+            break;
+        case PlaylistDAO::AutoDJSendLoc::REPLACE:
+            modelLoc = TrackModel::AutoDJLocation::Replace;
+            break;
+        case PlaylistDAO::AutoDJSendLoc::BOTTOM:
+            break;
+        }
+        if (m_pTrackModel->addSelectionToAutoDJ(m_trackIndexList, modelLoc)) {
+            // The model handles the enqueueing itself (e.g. downloads
+            // remote tracks incrementally).
+            return;
+        }
+    }
+
+    const TrackIdList trackIds = getTrackIds();
+    if (trackIds.empty()) {
+        qWarning() << "No tracks selected for AutoDJ";
+        return;
     }
 
     // TODO(XXX): Care whether the append succeeded.

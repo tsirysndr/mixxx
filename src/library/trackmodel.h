@@ -124,6 +124,24 @@ class TrackModel {
         return true;
     }
 
+    enum class AutoDJLocation {
+        Bottom,
+        Top,
+        Replace,
+    };
+
+    /// Called before the generic "Add to Auto DJ Queue" handling. Models
+    /// backed by remote sources can take over (e.g. fetch the underlying
+    /// files incrementally and enqueue them as they become available) by
+    /// returning true; returning false proceeds with the default
+    /// getTrackId()-based path.
+    virtual bool addSelectionToAutoDJ(
+            const QModelIndexList& indices, AutoDJLocation loc) {
+        Q_UNUSED(indices);
+        Q_UNUSED(loc);
+        return false;
+    }
+
     /// Get the URL of the track at the given QModelIndex.
     ///
     /// This function should be used in favor of getTrackId() to allow

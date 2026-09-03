@@ -27,9 +27,13 @@ DlgSubsonicConnection::DlgSubsonicConnection(
           m_pConfig(pConfig) {
     setWindowTitle(tr("Subsonic / Navidrome Server"));
     setModal(true);
+    // Wide enough to show a full server URL without scrolling.
+    setMinimumWidth(480);
 
     m_pHostEdit = new QLineEdit(this);
-    m_pHostEdit->setPlaceholderText(QStringLiteral("https://music.example.org"));
+    m_pHostEdit->setMinimumWidth(320);
+    m_pHostEdit->setPlaceholderText(
+            QStringLiteral("https://navidrome.rocksky.app"));
     m_pHostEdit->setText(m_pConfig->getValue(
             ConfigKey(kConfigGroup, QStringLiteral("Host")), QString()));
 

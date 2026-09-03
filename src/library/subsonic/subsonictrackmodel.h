@@ -19,6 +19,8 @@ class SubsonicTrackModel : public BaseExternalTrackModel {
     TrackId getTrackId(const QModelIndex& index) const override;
     bool prepareTrackLoad(
             const QModelIndex& index, const QString& group) override;
+    bool addSelectionToAutoDJ(
+            const QModelIndexList& indices, AutoDJLocation loc) override;
 
   protected:
     /// Maps "subsonic://track?id=...&suffix=..." to the local cache path.

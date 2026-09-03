@@ -73,3 +73,24 @@ TrackId SubsonicTrackModel::getTrackId(const QModelIndex& index) const {
 QString SubsonicTrackModel::resolveLocation(const QString& nativeLocation) const {
     return m_pFeature->cachePathForLocation(nativeLocation);
 }
+
+bool SubsonicTrackModel::addSelectionToAutoDJ(
+        const QModelIndexList& indices, AutoDJLocation loc) {
+    // The generic path needs valid library track ids, which undownloaded
+    // tracks do not have. Stream the selection through the feature's
+    // download-and-enqueue pipeline instead (cached tracks pass through
+    // it instantly).
+    QStringList locations;
+    locations.reserve(indices.size());
+    for (const QModelIndex& index : indices) {
+        locations.append(index.sibling(index.row(), fieldIndex("location"))
+                        .data()
+                        .toString());
+    }
+    m_pFeature->enqueueLocationsToAutoDJ(locations,
+            loc == AutoDJLocation::Top ? PlaylistDAO::AutoDJSendLoc::TOP
+                    : loc == AutoDJLocation::Replace
+                    ? PlaylistDAO::AutoDJSendLoc::REPLACE
+                    : PlaylistDAO::AutoDJSendLoc::BOTTOM);
+    return true;
+}
