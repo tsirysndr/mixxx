@@ -37,4 +37,8 @@ class DlgSubsonicConnection : public QDialog {
     QPushButton* m_pTestButton;
     QLabel* m_pStatusLabel;
     QFutureWatcher<QString> m_testWatcher;
+    // The keychain is queried asynchronously: a synchronous read in the
+    // constructor would block the dialog from appearing whenever macOS
+    // decides to show a keychain authorization prompt.
+    QFutureWatcher<QString> m_passwordWatcher;
 };
