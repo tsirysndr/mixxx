@@ -67,6 +67,27 @@ class RockskyService : public QObject {
     // rebuilt debounced on playlist changes).
     int m_autoDjPlaylistId = -1;
     QTimer m_queueDebounce;
+    // The advertised queue is [session history..., currently playing,
+    // upcoming playlist entries...] with index = history size, because
+    // controllers derive their History tab from the entries before the
+    // index and Auto DJ removes tracks from the playlist once loaded.
+    // Incoming queue-command indices are translated by this offset
+    // (= number of advertised entries preceding the playlist entries).
+    int m_queueHeadOffset = 0;
+
+    struct PlayedEntry {
+        QString title;
+        QString artist;
+        QString album;
+        QString albumArtist;
+        quint64 durationMs = 0;
+        int trackNumber = 0;
+    };
+    // Tracks of this session that crossed the scrobble threshold.
+    QList<PlayedEntry> m_playedHistory;
+    // Metadata of the currently watched track (for the history append
+    // when the next track takes over).
+    PlayedEntry m_watchedInfo;
 
     // Scrobble watcher (playerd rules): one submission per play, keyed on
     // the track, threshold = min(duration / 2, 4 minutes) of elapsed
