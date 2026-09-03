@@ -38,10 +38,12 @@ DlgSubsonicConnection::DlgSubsonicConnection(
             ConfigKey(kConfigGroup, QStringLiteral("Host")), QString()));
 
     m_pUsernameEdit = new QLineEdit(this);
+    m_pUsernameEdit->setMinimumWidth(320);
     m_pUsernameEdit->setText(m_pConfig->getValue(
             ConfigKey(kConfigGroup, QStringLiteral("Username")), QString()));
 
     m_pPasswordEdit = new QLineEdit(this);
+    m_pPasswordEdit->setMinimumWidth(320);
     m_pPasswordEdit->setEchoMode(QLineEdit::Password);
     // Prefer the keychain; fall back to a legacy plaintext config value.
     QString password = subsoniccredentials::read(
