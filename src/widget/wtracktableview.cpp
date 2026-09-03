@@ -1540,7 +1540,7 @@ void WTrackTableView::loadSelectedTrackToGroup(const QString& group,
     }
     auto index = indices.at(0);
     auto* pTrackModel = getTrackModel();
-    if (pTrackModel && !pTrackModel->prepareTrackLoad(index)) {
+    if (pTrackModel && !pTrackModel->prepareTrackLoad(index, group)) {
         // Deferred: the model loads the track itself once it is fetched.
         return;
     }

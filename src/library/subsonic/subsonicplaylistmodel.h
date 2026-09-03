@@ -17,7 +17,8 @@ class SubsonicPlaylistModel : public BaseExternalPlaylistModel {
 
     TrackPointer getTrack(const QModelIndex& index) const override;
     TrackId getTrackId(const QModelIndex& index) const override;
-    bool prepareTrackLoad(const QModelIndex& index) override;
+    bool prepareTrackLoad(
+            const QModelIndex& index, const QString& group) override;
 
   protected:
     QString resolveLocation(const QString& nativeLocation) const override;

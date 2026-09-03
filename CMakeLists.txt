@@ -3695,11 +3695,17 @@ default_option(
   "CARGO_EXECUTABLE"
 )
 message(STATUS "Support for Subsonic/Navidrome: ${SUBSONIC}")
-if(SUBSONIC)
+default_option(
+  ROCKSKY
+  "Rocksky (rocksky.app) scrobbling and remote player support (requires Rust toolchain)"
+  "CARGO_EXECUTABLE"
+)
+message(STATUS "Support for Rocksky: ${ROCKSKY}")
+if(SUBSONIC OR ROCKSKY)
   if(NOT CARGO_EXECUTABLE)
     message(
       FATAL_ERROR
-      "SUBSONIC=ON requires a Rust toolchain (cargo). Install it from https://rustup.rs or configure with -DSUBSONIC=OFF."
+      "SUBSONIC/ROCKSKY require a Rust toolchain (cargo). Install it from https://rustup.rs or disable the options."
     )
   endif()
   find_package(Corrosion QUIET)
@@ -3712,11 +3718,38 @@ if(SUBSONIC)
     )
     FetchContent_MakeAvailable(Corrosion)
   endif()
+  # All Rust integrations are bundled into the lib/mixxx-rust umbrella
+  # staticlib so exactly one copy of the cxx runtime gets linked; its
+  # cargo features mirror the CMake options.
+  set(MIXXX_RUST_FEATURES "")
+  if(SUBSONIC)
+    list(APPEND MIXXX_RUST_FEATURES subsonic)
+  endif()
+  if(ROCKSKY)
+    list(APPEND MIXXX_RUST_FEATURES rocksky)
+  endif()
   corrosion_import_crate(
-    MANIFEST_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lib/subsonic-rs/Cargo.toml"
+    MANIFEST_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lib/mixxx-rust/Cargo.toml"
     CRATE_TYPES staticlib
-    FEATURES ffi
+    FEATURES ${MIXXX_RUST_FEATURES}
   )
+  if(APPLE)
+    # Native TLS root store and proxy detection used by the Rust crates
+    target_link_libraries(
+      mixxx-lib
+      PRIVATE
+      "-framework Security"
+      "-framework CoreFoundation"
+      "-framework SystemConfiguration"
+    )
+  elseif(WIN32)
+    target_link_libraries(
+      mixxx-lib
+      PRIVATE crypt32 secur32 ncrypt ws2_32 userenv bcrypt ntdll
+    )
+  endif()
+endif()
+if(SUBSONIC)
   # Secure password storage for the Subsonic connection dialog.
   # QTKEYCHAIN_STATIC is essential: a shared qtkeychain would duplicate the
   # statically linked Qt inside a dylib (ObjC class clashes on macOS).
@@ -3736,28 +3769,13 @@ if(SUBSONIC)
     SYSTEM
     PRIVATE "${qtkeychain_SOURCE_DIR}" "${qtkeychain_BINARY_DIR}"
   )
-  corrosion_add_cxxbridge(subsonic-bridge CRATE subsonic_rs FILES bridge.rs)
+  corrosion_add_cxxbridge(subsonic-bridge CRATE mixxx_rust FILES subsonic_bridge.rs)
   # The generated bridge code includes library/subsonic/subsonicimportprogress.h
   target_include_directories(
     subsonic-bridge
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
   )
   target_link_libraries(mixxx-lib PRIVATE subsonic-bridge)
-  if(APPLE)
-    # Native TLS root store and proxy detection used by the Rust crate
-    target_link_libraries(
-      mixxx-lib
-      PRIVATE
-      "-framework Security"
-      "-framework CoreFoundation"
-      "-framework SystemConfiguration"
-    )
-  elseif(WIN32)
-    target_link_libraries(
-      mixxx-lib
-      PRIVATE crypt32 secur32 ncrypt ws2_32 userenv bcrypt ntdll
-    )
-  endif()
   target_compile_definitions(mixxx-lib PUBLIC __SUBSONIC__)
   target_sources(
     mixxx-lib
@@ -3776,6 +3794,28 @@ if(SUBSONIC)
       COMMAND
         ${CARGO_EXECUTABLE} test --manifest-path
         ${CMAKE_CURRENT_SOURCE_DIR}/lib/subsonic-rs/Cargo.toml
+    )
+  endif()
+endif()
+
+# Rocksky scrobbling & remote player (Rust layer in lib/rocksky-rs; the
+# ROCKSKY option itself is declared alongside SUBSONIC above)
+if(ROCKSKY)
+  corrosion_add_cxxbridge(rocksky-bridge CRATE mixxx_rust FILES rocksky_bridge.rs)
+  # The generated bridge code includes rocksky/rockskycommandhandler.h
+  target_include_directories(
+    rocksky-bridge
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  )
+  target_link_libraries(mixxx-lib PRIVATE rocksky-bridge)
+  target_compile_definitions(mixxx-lib PUBLIC __ROCKSKY__)
+  target_sources(mixxx-lib PRIVATE src/rocksky/rockskyservice.cpp)
+  if(BUILD_TESTING)
+    add_test(
+      NAME rocksky_rs_cargo_test
+      COMMAND
+        ${CARGO_EXECUTABLE} test --manifest-path
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/rocksky-rs/Cargo.toml
     )
   endif()
 endif()

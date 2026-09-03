@@ -22,6 +22,9 @@ class ControlObject;
 class CrateFeature;
 class LibraryControl;
 class LibraryFeature;
+#ifdef __SUBSONIC__
+class SubsonicFeature;
+#endif
 class LibraryTableModel;
 class KeyboardEventFilter;
 class MixxxLibraryFeature;
@@ -54,6 +57,13 @@ class Library: public QObject {
             PlayerManager* pPlayerManager,
             RecordingManager* pRecordingManager);
     ~Library() override;
+
+#ifdef __SUBSONIC__
+    /// The Subsonic library feature, or nullptr when disabled by config.
+    SubsonicFeature* subsonicFeature() const {
+        return m_pSubsonicFeature;
+    }
+#endif
 
     void stopPendingTasks();
 
@@ -184,6 +194,9 @@ class Library: public QObject {
       void onPlayerManagerTrackAnalyzerIdle();
 
   private:
+#ifdef __SUBSONIC__
+    SubsonicFeature* m_pSubsonicFeature = nullptr;
+#endif
     const UserSettingsPointer m_pConfig;
 
     // The Mixxx database connection pool

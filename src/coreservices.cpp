@@ -11,6 +11,9 @@
 #ifdef __BROADCAST__
 #include "broadcast/broadcastmanager.h"
 #endif
+#ifdef __ROCKSKY__
+#include "rocksky/rockskyservice.h"
+#endif
 #include "control/controlindicatortimer.h"
 #include "controllers/controllermanager.h"
 #include "controllers/keyboard/keyboardeventfilter.h"
@@ -627,6 +630,20 @@ void CoreServices::initialize(QApplication* pApp) {
             m_pPlayerManager.get(),
             m_pRecordingManager.get());
 
+#ifdef __ROCKSKY__
+    // Rocksky remote player + autoscrobbling; observes PlayerInfo and
+    // mirrors the Auto DJ queue. The Subsonic feature (if enabled)
+    // resolves enqueue commands into playable tracks.
+    m_pRockskyService = std::make_shared<RockskyService>(pConfig,
+            m_pTrackCollectionManager.get(),
+#ifdef __SUBSONIC__
+            m_pLibrary->subsonicFeature()
+#else
+            nullptr
+#endif
+    );
+#endif
+
     OverviewCache* pOverviewCache = OverviewCache::createInstance(pConfig, m_pDbConnectionPool);
     connect(&(m_pTrackCollectionManager->internalCollection()->getTrackDAO()),
             &TrackDAO::waveformSummaryUpdated,
@@ -960,6 +977,12 @@ void CoreServices::finalize() {
     // the data models.
     // Depends on RecordingManager and PlayerManager
     qDebug() << t.elapsed(false).debugMillisWithUnit() << "deleting Library";
+#ifdef __ROCKSKY__
+    // Stops the remote player and joins its command loop while the track
+    // collection and PlayerInfo it observes are still alive.
+    m_pRockskyService.reset();
+#endif
+
     CLEAR_AND_CHECK_DELETED(m_pLibrary);
 
     // RecordingManager depends on config, engine

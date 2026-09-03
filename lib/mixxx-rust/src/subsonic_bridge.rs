@@ -3,13 +3,13 @@
 //! Threading contract: `Client` is Send + Sync; all `&Client` functions may
 //! be called concurrently from any thread (the QtConcurrent import worker,
 //! deck-load threads, ...). Errors cross the bridge as `rust::Error`
-//! exceptions carrying the `Display` form of [`crate::Error`].
+//! exceptions carrying the `Display` form of [`subsonic_rs::Error`].
 
 use std::pin::Pin;
 
-use crate::client::{Config, SubsonicClient};
-use crate::error::Error;
-use crate::model::Child;
+use subsonic_rs::client::{Config, SubsonicClient};
+use subsonic_rs::error::Error;
+use subsonic_rs::model::Child;
 
 #[cxx::bridge(namespace = "subsonic")]
 mod ffi {
@@ -112,7 +112,7 @@ fn fetch_all_tracks(
             .as_mut()
             .onProgress(tracks_loaded, albums_done, albums_total)
     };
-    let tracks = crate::library::fetch_all_tracks(&client.inner, &mut callback)?;
+    let tracks = subsonic_rs::library::fetch_all_tracks(&client.inner, &mut callback)?;
     Ok(tracks.into_iter().map(to_ffi_track).collect())
 }
 
@@ -130,7 +130,7 @@ fn fetch_playlists(client: &Client) -> Result<Vec<ffi::FfiPlaylist>, Error> {
 }
 
 fn fetch_playlist_track_ids(client: &Client, playlist_id: &str) -> Result<Vec<String>, Error> {
-    crate::library::fetch_playlist_track_ids(&client.inner, playlist_id)
+    subsonic_rs::library::fetch_playlist_track_ids(&client.inner, playlist_id)
 }
 
 fn download_track(
@@ -139,7 +139,7 @@ fn download_track(
     suffix: &str,
     cache_dir: &str,
 ) -> Result<String, Error> {
-    crate::download::download_track(&client.inner, track_id, suffix, cache_dir)
+    subsonic_rs::download::download_track(&client.inner, track_id, suffix, cache_dir)
 }
 
 fn download_cover_art(
@@ -148,11 +148,11 @@ fn download_cover_art(
     cache_dir: &str,
     size: u32,
 ) -> Result<String, Error> {
-    crate::download::download_cover_art(&client.inner, cover_art_id, cache_dir, size)
+    subsonic_rs::download::download_cover_art(&client.inner, cover_art_id, cache_dir, size)
 }
 
 fn cache_file_name(track_id: &str, suffix: &str) -> String {
-    crate::download::cache_file_name(track_id, suffix)
+    subsonic_rs::download::cache_file_name(track_id, suffix)
 }
 
 fn to_ffi_track(child: Child) -> ffi::FfiTrack {

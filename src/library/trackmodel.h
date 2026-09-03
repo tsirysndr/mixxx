@@ -115,8 +115,12 @@ class TrackModel {
     /// shortcuts). Models backed by remote sources can start fetching the
     /// underlying file and return false to defer the load until the file
     /// is available locally; returning true proceeds with getTrack().
-    virtual bool prepareTrackLoad(const QModelIndex& index) {
+    /// A non-empty group names the player the deferred load should target
+    /// (empty = next available deck).
+    virtual bool prepareTrackLoad(
+            const QModelIndex& index, const QString& group = QString()) {
         Q_UNUSED(index);
+        Q_UNUSED(group);
         return true;
     }
 

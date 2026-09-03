@@ -12,7 +12,7 @@
 #include "library/subsonic/subsoniccredentials.h"
 #include "moc_dlgsubsonicconnection.cpp"
 #include "rust/cxx.h"
-#include "subsonic-bridge/bridge.h"
+#include "subsonic-bridge/subsonic_bridge.h"
 
 namespace {
 

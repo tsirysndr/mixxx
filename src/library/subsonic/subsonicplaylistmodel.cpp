@@ -4,6 +4,7 @@
 
 #include "library/subsonic/subsonicfeature.h"
 #include "moc_subsonicplaylistmodel.cpp"
+#include "track/track.h"
 
 SubsonicPlaylistModel::SubsonicPlaylistModel(SubsonicFeature* pFeature,
         TrackCollectionManager* pTrackCollectionManager,
@@ -25,18 +26,28 @@ TrackPointer SubsonicPlaylistModel::getTrack(const QModelIndex& index) const {
     const QString cachePath = m_pFeature->cachePathForLocation(nativeLocation);
     if (cachePath.isEmpty() || !QFileInfo::exists(cachePath)) {
         // Side-effect-free display path; downloads only start in
-        // prepareTrackLoad().
-        return TrackPointer();
+        // prepareTrackLoad(). See SubsonicTrackModel::getTrack.
+        TrackPointer pTrack = Track::newTemporary(cachePath);
+        pTrack->setArtist(getFieldString(index, ColumnCache::COLUMN_LIBRARYTABLE_ARTIST));
+        pTrack->setTitle(getFieldString(index, ColumnCache::COLUMN_LIBRARYTABLE_TITLE));
+        pTrack->setAlbum(getFieldString(index, ColumnCache::COLUMN_LIBRARYTABLE_ALBUM));
+        pTrack->setAlbumArtist(getFieldString(
+                index, ColumnCache::COLUMN_LIBRARYTABLE_ALBUMARTIST));
+        pTrack->setDuration(
+                getFieldVariant(index, ColumnCache::COLUMN_LIBRARYTABLE_DURATION)
+                        .toDouble());
+        return pTrack;
     }
     return BaseExternalPlaylistModel::getTrack(index);
 }
 
-bool SubsonicPlaylistModel::prepareTrackLoad(const QModelIndex& index) {
+bool SubsonicPlaylistModel::prepareTrackLoad(
+        const QModelIndex& index, const QString& group) {
     const QString nativeLocation =
             index.sibling(index.row(), fieldIndex("location"))
                     .data()
                     .toString();
-    return !m_pFeature->requestTrackDownload(nativeLocation).isEmpty();
+    return !m_pFeature->requestTrackDownload(nativeLocation, group).isEmpty();
 }
 
 TrackId SubsonicPlaylistModel::getTrackId(const QModelIndex& index) const {

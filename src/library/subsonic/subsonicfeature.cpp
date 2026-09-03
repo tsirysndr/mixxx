@@ -368,10 +368,55 @@ void SubsonicFeature::addToAutoDJ(PlaylistDAO::AutoDJSendLoc loc) {
     QString playlistName;
     const QStringList locations =
             playlistLocationsFromRightClickIndex(&playlistName);
+    qInfo() << "Streaming" << locations.size()
+            << "Subsonic tracks from playlist" << playlistName
+            << "into the Auto DJ queue";
+    enqueueLocationsToAutoDJ(locations, loc);
+}
+
+QString SubsonicFeature::locationForSubsonicId(const QString& subsonicId) const {
+    QSqlQuery query(
+            m_pLibrary->trackCollectionManager()->internalCollection()->database());
+    query.prepare(
+            "SELECT location FROM subsonic_library WHERE subsonic_id = :id");
+    query.bindValue(":id", subsonicId);
+    if (!query.exec() || !query.next()) {
+        return {};
+    }
+    return query.value(0).toString();
+}
+
+void SubsonicFeature::loadTrackByLocation(
+        const QString& nativeLocation, const QString& group) {
+    const QString cachePath = requestTrackDownload(nativeLocation, group);
+    if (cachePath.isEmpty()) {
+        // Deferred: loads when the download finishes.
+        return;
+    }
+    const TrackPointer pTrack =
+            m_pLibrary->trackCollectionManager()->getOrAddTrack(
+                    TrackRef::fromFilePath(cachePath));
+    if (!pTrack) {
+        return;
+    }
+    if (group.isEmpty()) {
+        emit loadTrack(pTrack);
+    } else {
+#ifdef __STEM__
+        emit loadTrackToPlayer(
+                pTrack, group, mixxx::StemChannelSelection(), false);
+#else
+        emit loadTrackToPlayer(pTrack, group, false);
+#endif
+    }
+}
+
+void SubsonicFeature::enqueueLocationsToAutoDJ(
+        const QStringList& locations, PlaylistDAO::AutoDJSendLoc loc) {
     if (locations.isEmpty()) {
         return;
     }
-    // Supersede any previous pipeline and stream this playlist: download
+    // Supersede any previous pipeline and stream these tracks: download
     // with a small lookahead, append each track as soon as it is ready.
     m_autoDJ.generation++;
     m_autoDJ.locations = locations;
@@ -384,9 +429,6 @@ void SubsonicFeature::addToAutoDJ(PlaylistDAO::AutoDJSendLoc loc) {
     // depending on Auto DJ state, which is not visible from here);
     // inserting at 2 keeps the streamed block contiguous and in order.
     m_autoDJ.topInsertPosition = 2;
-    qInfo() << "Streaming" << locations.size()
-            << "Subsonic tracks from playlist" << playlistName
-            << "into the Auto DJ queue";
     pumpAutoDJPipeline();
 }
 
@@ -530,7 +572,8 @@ QString SubsonicFeature::ensureTrackDownloaded(const QString& nativeLocation) {
     }
 }
 
-QString SubsonicFeature::requestTrackDownload(const QString& nativeLocation) {
+QString SubsonicFeature::requestTrackDownload(
+        const QString& nativeLocation, const QString& group) {
     const QString cachePath = cachePathForLocation(nativeLocation);
     if (cachePath.isEmpty()) {
         return {};
@@ -541,6 +584,7 @@ QString SubsonicFeature::requestTrackDownload(const QString& nativeLocation) {
     // Only the most recently requested track is loaded into a deck when
     // its download finishes; bulk operations just warm the cache.
     m_autoLoadLocation = nativeLocation;
+    m_autoLoadGroup = group;
     if (m_pendingDownloads.contains(nativeLocation)) {
         return {};
     }
@@ -615,7 +659,18 @@ void SubsonicFeature::onTrackDownloadFinished(const QString& nativeLocation,
     }
     if (m_autoLoadLocation == nativeLocation) {
         m_autoLoadLocation.clear();
-        emit loadTrack(pTrack);
+        const QString group = m_autoLoadGroup;
+        m_autoLoadGroup.clear();
+        if (group.isEmpty()) {
+            emit loadTrack(pTrack);
+        } else {
+#ifdef __STEM__
+            emit loadTrackToPlayer(
+                    pTrack, group, mixxx::StemChannelSelection(), false);
+#else
+            emit loadTrackToPlayer(pTrack, group, false);
+#endif
+        }
     }
 }
 

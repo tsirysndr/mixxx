@@ -15,6 +15,7 @@ class PlayerManager;
 class RecordingManager;
 #ifdef __BROADCAST__
 class BroadcastManager;
+class RockskyService;
 #endif
 class ControllerManager;
 class VinylControlManager;
@@ -128,6 +129,9 @@ class CoreServices : public QObject {
     std::shared_ptr<RecordingManager> m_pRecordingManager;
 #ifdef __BROADCAST__
     std::shared_ptr<BroadcastManager> m_pBroadcastManager;
+#endif
+#ifdef __ROCKSKY__
+    std::shared_ptr<RockskyService> m_pRockskyService;
 #endif
     std::shared_ptr<ControllerManager> m_pControllerManager;
 

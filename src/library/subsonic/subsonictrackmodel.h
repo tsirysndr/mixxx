@@ -17,7 +17,8 @@ class SubsonicTrackModel : public BaseExternalTrackModel {
 
     TrackPointer getTrack(const QModelIndex& index) const override;
     TrackId getTrackId(const QModelIndex& index) const override;
-    bool prepareTrackLoad(const QModelIndex& index) override;
+    bool prepareTrackLoad(
+            const QModelIndex& index, const QString& group) override;
 
   protected:
     /// Maps "subsonic://track?id=...&suffix=..." to the local cache path.

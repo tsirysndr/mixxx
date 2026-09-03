@@ -2020,6 +2020,13 @@ void WTrackMenu::loadSelectionToGroup(const QString& group,
 void WTrackMenu::loadSelectionToGroup(const QString& group,
         bool play) {
 #endif
+    if (m_pTrackModel && !m_trackIndexList.isEmpty() &&
+            !m_pTrackModel->prepareTrackLoad(m_trackIndexList.first(), group)) {
+        // Deferred: the model fetches the track and loads it into the
+        // requested group once available.
+        return;
+    }
+
     TrackPointer pTrack = getFirstTrackPointer();
     if (!pTrack) {
         return;

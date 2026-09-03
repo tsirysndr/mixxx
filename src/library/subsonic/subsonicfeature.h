@@ -14,7 +14,7 @@
 
 #include "library/baseexternallibraryfeature.h"
 #include "rust/cxx.h"
-#include "subsonic-bridge/bridge.h"
+#include "subsonic-bridge/subsonic_bridge.h"
 #include "util/parented_ptr.h"
 
 class BaseTrackCache;
@@ -48,9 +48,11 @@ class SubsonicFeature : public BaseExternalLibraryFeature {
     QString ensureTrackDownloaded(const QString& nativeLocation);
     /// Non-blocking (UI thread): returns the cache path if the track is
     /// already downloaded. Otherwise schedules a background download,
-    /// returns an empty string, and loads the track into a deck when the
-    /// most recently requested download finishes.
-    QString requestTrackDownload(const QString& nativeLocation);
+    /// returns an empty string, and loads the track when the most
+    /// recently requested download finishes — into `group` if given,
+    /// else into the next available deck.
+    QString requestTrackDownload(
+            const QString& nativeLocation, const QString& group = QString());
     /// Pure string computation mapping a subsonic:// location to its cache
     /// file path (no I/O, no network). Thread-safe.
     QString cachePathForLocation(const QString& nativeLocation) const;
@@ -58,6 +60,18 @@ class SubsonicFeature : public BaseExternalLibraryFeature {
     static QString makeLocation(const QString& trackId, const QString& suffix);
     static bool parseLocation(
             const QString& nativeLocation, QString* pTrackId, QString* pSuffix);
+
+    /// Looks up the subsonic:// location of an imported track by its
+    /// server-side id. Empty if unknown.
+    QString locationForSubsonicId(const QString& subsonicId) const;
+    /// Streams the given locations into the Auto DJ queue (downloading
+    /// with a small lookahead, appended in order).
+    void enqueueLocationsToAutoDJ(
+            const QStringList& locations, PlaylistDAO::AutoDJSendLoc loc);
+    /// Loads the track into `group` (or the next available deck if
+    /// empty), downloading first when needed.
+    void loadTrackByLocation(
+            const QString& nativeLocation, const QString& group = QString());
 
   public slots:
     void activate() override;
@@ -153,6 +167,7 @@ class SubsonicFeature : public BaseExternalLibraryFeature {
     QThreadPool m_downloadPool;
     QSet<QString> m_pendingDownloads;
     QString m_autoLoadLocation;
+    QString m_autoLoadGroup;
 
     // Streaming "Add to Auto DJ" pipeline (UI-thread state). Downloads
     // run with a small lookahead; completed tracks are appended in

@@ -4,6 +4,7 @@
 
 #include "library/subsonic/subsonicfeature.h"
 #include "moc_subsonictrackmodel.cpp"
+#include "track/track.h"
 
 SubsonicTrackModel::SubsonicTrackModel(SubsonicFeature* pFeature,
         TrackCollectionManager* pTrackCollectionManager,
@@ -24,21 +25,35 @@ TrackPointer SubsonicTrackModel::getTrack(const QModelIndex& index) const {
     const QString cachePath = m_pFeature->cachePathForLocation(nativeLocation);
     if (cachePath.isEmpty() || !QFileInfo::exists(cachePath)) {
         // Deliberately side-effect-free: this is also called from
-        // selection/display paths. Downloads are triggered exclusively
-        // through prepareTrackLoad().
-        return TrackPointer();
+        // selection/display and context-menu paths. Downloads are
+        // triggered exclusively through prepareTrackLoad(). A temporary
+        // (not-in-library) track carries the metadata so menus and
+        // widgets can render; players never receive it because the load
+        // paths are gated on prepareTrackLoad().
+        TrackPointer pTrack = Track::newTemporary(cachePath);
+        pTrack->setArtist(getFieldString(index, ColumnCache::COLUMN_LIBRARYTABLE_ARTIST));
+        pTrack->setTitle(getFieldString(index, ColumnCache::COLUMN_LIBRARYTABLE_TITLE));
+        pTrack->setAlbum(getFieldString(index, ColumnCache::COLUMN_LIBRARYTABLE_ALBUM));
+        pTrack->setAlbumArtist(getFieldString(
+                index, ColumnCache::COLUMN_LIBRARYTABLE_ALBUMARTIST));
+        pTrack->setDuration(
+                getFieldVariant(index, ColumnCache::COLUMN_LIBRARYTABLE_DURATION)
+                        .toDouble());
+        return pTrack;
     }
     return BaseExternalTrackModel::getTrack(index);
 }
 
-bool SubsonicTrackModel::prepareTrackLoad(const QModelIndex& index) {
+bool SubsonicTrackModel::prepareTrackLoad(
+        const QModelIndex& index, const QString& group) {
     const QString nativeLocation =
             index.sibling(index.row(), fieldIndex("location"))
                     .data()
                     .toString();
     // Cached: proceed with the regular load. Otherwise a background
-    // download starts and the feature loads the track when it finishes.
-    return !m_pFeature->requestTrackDownload(nativeLocation).isEmpty();
+    // download starts and the feature loads the track (into `group` if
+    // given) when it finishes.
+    return !m_pFeature->requestTrackDownload(nativeLocation, group).isEmpty();
 }
 
 TrackId SubsonicTrackModel::getTrackId(const QModelIndex& index) const {

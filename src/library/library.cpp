@@ -224,7 +224,8 @@ Library::Library(
     if (SubsonicFeature::isSupported() &&
             m_pConfig->getValue(
                     ConfigKey(kConfigGroup, "ShowSubsonicLibrary"), true)) {
-        addFeature(new SubsonicFeature(this, m_pConfig));
+        m_pSubsonicFeature = new SubsonicFeature(this, m_pConfig);
+        addFeature(m_pSubsonicFeature);
     }
 #endif
 

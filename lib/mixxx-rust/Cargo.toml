@@ -1,0 +1,29 @@
+[package]
+name = "mixxx-rust"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+license = "GPL-2.0-or-later"
+description = "Umbrella staticlib bundling all Rust integrations for Mixxx"
+publish = false
+
+# All cxx bridges live in this single crate so the final binary links
+# exactly one copy of the cxx C++ runtime (two Rust staticlibs would
+# collide on cxxbridge1$... symbols). The feature per integration matches
+# the corresponding CMake option.
+
+[lib]
+name = "mixxx_rust"
+crate-type = ["staticlib"]
+
+[features]
+default = []
+subsonic = ["dep:subsonic-rs"]
+rocksky = ["dep:rocksky-rs"]
+
+[dependencies]
+cxx = "1.0"
+rocksky-rs = { path = "../rocksky-rs", optional = true }
+subsonic-rs = { path = "../subsonic-rs", optional = true }
+
+[workspace]

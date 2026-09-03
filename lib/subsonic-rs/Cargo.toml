@@ -9,19 +9,9 @@ publish = false
 
 [lib]
 name = "subsonic_rs"
-crate-type = ["staticlib", "rlib"]
-
-[features]
-# The `ffi` feature compiles the cxx bridge module. It is off by default
-# so that `cargo test` links without the C++ side of the bridge; the
-# Mixxx CMake build enables it via corrosion (FEATURES ffi). The cxx
-# dependency itself is unconditional because corrosion_add_cxxbridge
-# requires it to appear in the resolved dependency graph.
-default = []
-ffi = []
+crate-type = ["rlib"]
 
 [dependencies]
-cxx = "1.0"
 hex = "0.4"
 md-5 = "0.10"
 rand = "0.8"
