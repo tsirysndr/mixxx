@@ -2,6 +2,7 @@
 
 #include <QFuture>
 #include <QFutureWatcher>
+#include <QHash>
 #include <QMutex>
 #include <QPointer>
 #include <QSet>
@@ -70,6 +71,15 @@ class SubsonicFeature : public BaseExternalLibraryFeature {
 
     std::unique_ptr<BaseSqlTableModel> createPlaylistModelForPlaylist(
             const QVariant& data) override;
+    /// Bulk path behind "Import as Playlist/Crate": downloads all playlist
+    /// tracks (concurrently, with a cancellable progress dialog) so they
+    /// can be registered in the Mixxx library.
+    void appendTrackIdsFromRightClickIndex(
+            QList<TrackId>* trackIds, QString* pPlaylist) override;
+    /// Streaming path behind "Add to Auto DJ": tracks are downloaded with
+    /// a small lookahead and appended to the Auto DJ queue in playlist
+    /// order as soon as each one is available.
+    void addToAutoDJ(PlaylistDAO::AutoDJSendLoc loc) override;
     /// Runs on a QtConcurrent worker thread.
     TreeItem* importLibrary();
     /// Returns a client for the configured server, creating it on first
@@ -80,8 +90,19 @@ class SubsonicFeature : public BaseExternalLibraryFeature {
     /// Shows the modal connection dialog; returns true if accepted.
     bool showConnectionDialog();
     void cancelPendingImport();
+    /// Starts the background import unless one is already running.
+    void startImport();
+    /// Populates the sidebar/track views from the cached tables of the
+    /// previous import so the feature is browsable instantly.
+    void showCachedLibrary();
     /// Worker thread: fetches cover art for the track into the cache.
-    QString ensureCoverDownloaded(const QString& trackId);
+    /// size > 0 requests a server-side scaled thumbnail; 0 = original.
+    QString ensureCoverDownloaded(const QString& coverArtId, int size = 0);
+    /// Ordered playlist track locations of the right-clicked sidebar item.
+    QStringList playlistLocationsFromRightClickIndex(QString* pPlaylistName);
+    void pumpAutoDJPipeline();
+    void onAutoDJTrackReady(
+            int generation, int sequence, const QString& cachePath);
     /// UI thread: finalizes an async download (cover art, deck load).
     void onTrackDownloadFinished(const QString& nativeLocation,
             const QString& cachePath,
@@ -102,6 +123,23 @@ class SubsonicFeature : public BaseExternalLibraryFeature {
 
     QString m_cacheDir;
 
+    // Deferred cover-thumbnail fetching: the import commits and shows the
+    // library first, covers arrive in a second background pass.
+    struct CoverFetchResult {
+        QString coverArtId;
+        QString thumbPath;
+        QByteArray imageDigest;
+        quint16 legacyHash;
+    };
+    void startCoverFetch(const QStringList& coverArtIds);
+    void applyCoverResults(int generation, const QList<CoverFetchResult>& results);
+    // Written by the import worker, consumed on the UI thread after the
+    // import future has finished (sequenced by future completion).
+    QStringList m_pendingCoverArtIds;
+    QFuture<void> m_coverFuture;
+    // Bumped on the UI thread, checked by the cover worker thread.
+    std::atomic<int> m_coverGeneration{0};
+
     mutable QMutex m_clientMutex;
     ClientPtr m_pClient;
     QString m_clientConfigId;
@@ -115,4 +153,19 @@ class SubsonicFeature : public BaseExternalLibraryFeature {
     QThreadPool m_downloadPool;
     QSet<QString> m_pendingDownloads;
     QString m_autoLoadLocation;
+
+    // Streaming "Add to Auto DJ" pipeline (UI-thread state). Downloads
+    // run with a small lookahead; completed tracks are appended in
+    // playlist order. A generation bump abandons a superseded pipeline.
+    struct AutoDJPipeline {
+        int generation = 0;
+        QStringList locations;
+        int nextToDownload = 0;
+        int nextToEnqueue = 0;
+        QHash<int, QString> finishedDownloads;
+        PlaylistDAO::AutoDJSendLoc sendLoc = PlaylistDAO::AutoDJSendLoc::BOTTOM;
+        int topInsertPosition = 0;
+        bool firstEnqueued = false;
+    };
+    AutoDJPipeline m_autoDJ;
 };

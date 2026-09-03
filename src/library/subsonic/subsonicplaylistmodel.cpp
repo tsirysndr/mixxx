@@ -22,11 +22,21 @@ TrackPointer SubsonicPlaylistModel::getTrack(const QModelIndex& index) const {
             index.sibling(index.row(), fieldIndex("location"))
                     .data()
                     .toString();
-    if (m_pFeature->requestTrackDownload(nativeLocation).isEmpty()) {
-        // Download scheduled; the track auto-loads when it finishes.
+    const QString cachePath = m_pFeature->cachePathForLocation(nativeLocation);
+    if (cachePath.isEmpty() || !QFileInfo::exists(cachePath)) {
+        // Side-effect-free display path; downloads only start in
+        // prepareTrackLoad().
         return TrackPointer();
     }
     return BaseExternalPlaylistModel::getTrack(index);
+}
+
+bool SubsonicPlaylistModel::prepareTrackLoad(const QModelIndex& index) {
+    const QString nativeLocation =
+            index.sibling(index.row(), fieldIndex("location"))
+                    .data()
+                    .toString();
+    return !m_pFeature->requestTrackDownload(nativeLocation).isEmpty();
 }
 
 TrackId SubsonicPlaylistModel::getTrackId(const QModelIndex& index) const {

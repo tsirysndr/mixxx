@@ -49,10 +49,14 @@ class BaseExternalLibraryFeature : public LibraryFeature {
         m_lastRightClickedIndex = QModelIndex();
     };
 
+    /// Adds the tracks of the right-clicked playlist to the Auto DJ queue.
+    /// Features backed by remote sources may override this to fetch the
+    /// underlying files incrementally instead of all at once.
+    virtual void addToAutoDJ(PlaylistDAO::AutoDJSendLoc loc);
+
     TrackCollection* const m_pTrackCollection;
 
   private:
-    void addToAutoDJ(PlaylistDAO::AutoDJSendLoc loc);
 
     // Caution: Make sure this is reset whenever the library tree is updated,
     // so that the internalPointer() does not become dangling

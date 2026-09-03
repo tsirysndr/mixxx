@@ -74,18 +74,30 @@ pub fn download_track(
 }
 
 /// Downloads cover art into `cache_dir` and returns the cached file path.
+/// `size` > 0 requests a server-side scaled square thumbnail of that many
+/// pixels; 0 fetches the original image.
 pub fn download_cover_art(
     client: &SubsonicClient,
     cover_art_id: &str,
     cache_dir: &str,
+    size: u32,
 ) -> Result<String> {
-    let file_name = format!("cover-{}.jpg", sanitize_component(cover_art_id));
+    let file_name = if size > 0 {
+        format!("cover-{}-{size}.jpg", sanitize_component(cover_art_id))
+    } else {
+        format!("cover-{}.jpg", sanitize_component(cover_art_id))
+    };
     let final_path = Path::new(cache_dir).join(&file_name);
     if final_path.exists() {
         return path_to_string(final_path);
     }
     fs::create_dir_all(cache_dir)?;
-    let response = fetch_binary(client, "getCoverArt.view", &[("id", cover_art_id)])?;
+    let size_string = size.to_string();
+    let mut params: Vec<(&str, &str)> = vec![("id", cover_art_id)];
+    if size > 0 {
+        params.push(("size", &size_string));
+    }
+    let response = fetch_binary(client, "getCoverArt.view", &params)?;
     write_atomically(response, cache_dir, &file_name, &final_path)?;
     path_to_string(final_path)
 }

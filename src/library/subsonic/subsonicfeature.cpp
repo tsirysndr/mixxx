@@ -1,10 +1,13 @@
 #include "library/subsonic/subsonicfeature.h"
 
 #include <QAction>
+#include <QCoreApplication>
 #include <QDir>
+#include <QEventLoop>
 #include <QFileInfo>
 #include <QImage>
 #include <QMenu>
+#include <QProgressDialog>
 #include <QMessageBox>
 #include <QSqlError>
 #include <QStandardPaths>
@@ -14,6 +17,7 @@
 #include <QtConcurrentRun>
 #include <QtDebug>
 
+#include "library/basesqltablemodel.h"
 #include "library/basetrackcache.h"
 #include "library/coverart.h"
 #include "library/library.h"
@@ -22,6 +26,7 @@
 #include "library/subsonic/subsoniccredentials.h"
 #include "library/subsonic/subsonicdao.h"
 #include "library/subsonic/subsonicimportprogress.h"
+#include "library/dao/trackschema.h"
 #include "library/subsonic/subsonicplaylistmodel.h"
 #include "library/subsonic/subsonictrackmodel.h"
 #include "library/trackcollection.h"
@@ -41,6 +46,9 @@ const QString kUsernameKey = QStringLiteral("Username");
 const QString kPasswordKey = QStringLiteral("Password");
 const QString kVerifyTlsKey = QStringLiteral("VerifyTls");
 
+// Server-side scaled cover size for the track browser column.
+constexpr int kCoverThumbnailSize = 256;
+
 QString fromRust(const rust::String& s) {
     return QString::fromUtf8(s.data(), static_cast<int>(s.size()));
 }
@@ -59,7 +67,15 @@ SubsonicFeature::SubsonicFeature(Library* pLibrary, UserSettingsPointer pConfig)
         qWarning() << "Failed to open database for Subsonic scanner:"
                    << m_database.lastError();
     }
-    // The tables must exist before the models create their views over them.
+    // The tables must exist before the models create their views over
+    // them. They persist across sessions so the previous import can be
+    // shown instantly; drop them only when their schema changed.
+    constexpr int kSchemaVersion = 2;
+    const ConfigKey schemaVersionKey(kConfigGroup, QStringLiteral("SchemaVersion"));
+    if (m_pConfig->getValue(schemaVersionKey, 0) != kSchemaVersion) {
+        SubsonicDAO::dropTables(m_database);
+        m_pConfig->setValue(schemaVersionKey, kSchemaVersion);
+    }
     SubsonicDAO::createTables(m_database);
 
     QString tableName = "subsonic_library";
@@ -79,7 +95,13 @@ SubsonicFeature::SubsonicFeature(Library* pLibrary, UserSettingsPointer pConfig)
             "duration",
             "bitrate",
             "bpm",
-            "rating"};
+            "rating",
+            "coverart_source",
+            "coverart_type",
+            "coverart_location",
+            "coverart_color",
+            "coverart_digest",
+            "coverart_hash"};
     QStringList searchColumns = {
             "artist",
             "album",
@@ -119,6 +141,8 @@ SubsonicFeature::SubsonicFeature(Library* pLibrary, UserSettingsPointer pConfig)
 
 SubsonicFeature::~SubsonicFeature() {
     cancelPendingImport();
+    m_coverGeneration++;
+    m_coverFuture.waitForFinished();
     m_downloadPool.clear();
     m_downloadPool.waitForDone();
     m_database.close();
@@ -169,29 +193,49 @@ void SubsonicFeature::activate(bool forceReload) {
         forceReload = true;
     }
 
-    if (!m_isActivated || forceReload) {
-        cancelPendingImport();
-
-        ScopedTransaction transaction(m_database);
-        SubsonicDAO::clearTables(m_database);
-        transaction.commit();
-
-        emit showTrackModel(m_pTrackModel);
-
+    if (!m_isActivated) {
         m_isActivated = true;
-        m_lastImportError.clear();
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-        m_future = QtConcurrent::run(&SubsonicFeature::importLibrary, this);
-#else
-        m_future = QtConcurrent::run(this, &SubsonicFeature::importLibrary);
-#endif
-        m_futureWatcher.setFuture(m_future);
-        m_title = tr("(loading) Subsonic");
-        emit featureIsLoading(this, true);
-    } else {
-        emit showTrackModel(m_pTrackModel);
+        // Show the previous import instantly (if any); fresh data
+        // replaces it silently when the background refresh finishes.
+        showCachedLibrary();
+        startImport();
+    } else if (forceReload) {
+        startImport();
     }
+    emit showTrackModel(m_pTrackModel);
     emit enableCoverArtDisplay(true);
+}
+
+void SubsonicFeature::showCachedLibrary() {
+    if (SubsonicDAO::trackCount(m_database) <= 0) {
+        return;
+    }
+    m_trackSource->buildIndex();
+    auto pRoot = TreeItem::newRoot(this);
+    const auto playlists = SubsonicDAO::allPlaylists(m_database);
+    for (const auto& [playlistId, name] : playlists) {
+        pRoot->appendChild(name, playlistId);
+    }
+    m_pSidebarModel->setRootItem(std::move(pRoot));
+}
+
+void SubsonicFeature::startImport() {
+    if (m_future.isRunning()) {
+        // A refresh is already underway; never block the UI waiting.
+        return;
+    }
+    // Abandon any running cover pass: it would race the import worker on
+    // the database connection, and the new import restarts it anyway.
+    m_coverGeneration++;
+    m_lastImportError.clear();
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    m_future = QtConcurrent::run(&SubsonicFeature::importLibrary, this);
+#else
+    m_future = QtConcurrent::run(this, &SubsonicFeature::importLibrary);
+#endif
+    m_futureWatcher.setFuture(m_future);
+    m_title = tr("(loading) Subsonic");
+    emit featureIsLoading(this, true);
 }
 
 void SubsonicFeature::activateChild(const QModelIndex& index) {
@@ -230,6 +274,194 @@ SubsonicFeature::createPlaylistModelForPlaylist(const QVariant& data) {
             this, m_pLibrary->trackCollectionManager(), m_trackSource);
     pModel->setPlaylistById(playlistId);
     return pModel;
+}
+
+QStringList SubsonicFeature::playlistLocationsFromRightClickIndex(
+        QString* pPlaylistName) {
+    const QModelIndex index = lastRightClickedIndex();
+    if (!index.isValid()) {
+        return {};
+    }
+    const auto* pTreeItem = static_cast<TreeItem*>(index.internalPointer());
+    VERIFY_OR_DEBUG_ASSERT(pTreeItem) {
+        return {};
+    }
+    if (pPlaylistName) {
+        *pPlaylistName = pTreeItem->getLabel();
+    }
+    const std::unique_ptr<BaseSqlTableModel> pPlaylistModel =
+            createPlaylistModelForPlaylist(pTreeItem->getData());
+    if (!pPlaylistModel || !pPlaylistModel->initialized()) {
+        return {};
+    }
+    pPlaylistModel->setSort(
+            pPlaylistModel->fieldIndex(
+                    ColumnCache::COLUMN_PLAYLISTTRACKSTABLE_POSITION),
+            Qt::AscendingOrder);
+    pPlaylistModel->select();
+
+    QStringList locations;
+    const int rows = pPlaylistModel->rowCount();
+    for (int i = 0; i < rows; ++i) {
+        const QModelIndex rowIndex = pPlaylistModel->index(
+                i, pPlaylistModel->fieldIndex("location"));
+        locations.append(rowIndex.data().toString());
+    }
+    return locations;
+}
+
+void SubsonicFeature::appendTrackIdsFromRightClickIndex(
+        QList<TrackId>* trackIds, QString* pPlaylist) {
+    const QStringList locations = playlistLocationsFromRightClickIndex(pPlaylist);
+    if (locations.isEmpty()) {
+        return;
+    }
+
+    // Download everything up front (the tracks must exist locally to be
+    // registered in the Mixxx library). Downloads run concurrently on the
+    // pool; the modal progress dialog keeps the UI alive and cancellable.
+    QList<QFuture<QString>> futures;
+    futures.reserve(locations.size());
+    for (const QString& location : locations) {
+        futures.append(QtConcurrent::run(&m_downloadPool, [this, location] {
+            return ensureTrackDownloaded(location);
+        }));
+    }
+
+    QProgressDialog progressDialog(
+            tr("Downloading %1 tracks from Subsonic...").arg(locations.size()),
+            tr("Cancel"),
+            0,
+            locations.size(),
+            nullptr);
+    progressDialog.setWindowModality(Qt::ApplicationModal);
+    progressDialog.setMinimumDuration(0);
+
+    for (int i = 0; i < futures.size(); ++i) {
+        while (!futures[i].isFinished() && !progressDialog.wasCanceled()) {
+            QCoreApplication::processEvents(
+                    QEventLoop::AllEvents | QEventLoop::WaitForMoreEvents, 50);
+        }
+        if (progressDialog.wasCanceled()) {
+            // Already running downloads finish in the background and just
+            // warm the cache; nothing gets added.
+            trackIds->clear();
+            return;
+        }
+        progressDialog.setValue(i + 1);
+        const QString cachePath = futures[i].result();
+        if (cachePath.isEmpty()) {
+            qWarning() << "Skipping Subsonic track that failed to download:"
+                       << locations[i];
+            continue;
+        }
+        const TrackPointer pTrack =
+                m_pLibrary->trackCollectionManager()->getOrAddTrack(
+                        TrackRef::fromFilePath(cachePath));
+        if (pTrack) {
+            trackIds->append(pTrack->getId());
+        }
+    }
+}
+
+void SubsonicFeature::addToAutoDJ(PlaylistDAO::AutoDJSendLoc loc) {
+    QString playlistName;
+    const QStringList locations =
+            playlistLocationsFromRightClickIndex(&playlistName);
+    if (locations.isEmpty()) {
+        return;
+    }
+    // Supersede any previous pipeline and stream this playlist: download
+    // with a small lookahead, append each track as soon as it is ready.
+    m_autoDJ.generation++;
+    m_autoDJ.locations = locations;
+    m_autoDJ.nextToDownload = 0;
+    m_autoDJ.nextToEnqueue = 0;
+    m_autoDJ.finishedDownloads.clear();
+    m_autoDJ.sendLoc = loc;
+    m_autoDJ.firstEnqueued = false;
+    // Approximation of PlaylistDAO's TOP insert position (1 or 2
+    // depending on Auto DJ state, which is not visible from here);
+    // inserting at 2 keeps the streamed block contiguous and in order.
+    m_autoDJ.topInsertPosition = 2;
+    qInfo() << "Streaming" << locations.size()
+            << "Subsonic tracks from playlist" << playlistName
+            << "into the Auto DJ queue";
+    pumpAutoDJPipeline();
+}
+
+void SubsonicFeature::pumpAutoDJPipeline() {
+    constexpr int kLookahead = 2;
+    const int inFlight = m_autoDJ.nextToDownload - m_autoDJ.nextToEnqueue -
+            static_cast<int>(m_autoDJ.finishedDownloads.size());
+    int freeSlots = kLookahead - inFlight;
+    while (freeSlots-- > 0 &&
+            m_autoDJ.nextToDownload < m_autoDJ.locations.size()) {
+        const int sequence = m_autoDJ.nextToDownload++;
+        const QString location = m_autoDJ.locations[sequence];
+        const int generation = m_autoDJ.generation;
+        QtConcurrent::run(&m_downloadPool, [this, generation, sequence, location] {
+            const QString path = ensureTrackDownloaded(location);
+            QMetaObject::invokeMethod(
+                    this,
+                    [this, generation, sequence, path] {
+                        onAutoDJTrackReady(generation, sequence, path);
+                    },
+                    Qt::QueuedConnection);
+        });
+    }
+}
+
+void SubsonicFeature::onAutoDJTrackReady(
+        int generation, int sequence, const QString& cachePath) {
+    if (generation != m_autoDJ.generation) {
+        // A newer pipeline superseded this one; the download still warmed
+        // the cache.
+        return;
+    }
+    m_autoDJ.finishedDownloads.insert(sequence, cachePath);
+    PlaylistDAO& playlistDao = m_pTrackCollection->getPlaylistDAO();
+    // Enqueue every completed track whose predecessors are all handled,
+    // so the Auto DJ queue always grows in playlist order.
+    while (m_autoDJ.finishedDownloads.contains(m_autoDJ.nextToEnqueue)) {
+        const QString path =
+                m_autoDJ.finishedDownloads.take(m_autoDJ.nextToEnqueue);
+        m_autoDJ.nextToEnqueue++;
+        if (path.isEmpty()) {
+            qWarning() << "Skipping Subsonic Auto DJ track that failed to download";
+            continue;
+        }
+        const TrackPointer pTrack =
+                m_pLibrary->trackCollectionManager()->getOrAddTrack(
+                        TrackRef::fromFilePath(path));
+        if (!pTrack) {
+            continue;
+        }
+        const QList<TrackId> trackIds{pTrack->getId()};
+        switch (m_autoDJ.sendLoc) {
+        case PlaylistDAO::AutoDJSendLoc::TOP: {
+            const int autoDjId =
+                    playlistDao.getPlaylistIdFromName(AUTODJ_TABLE);
+            if (autoDjId >= 0) {
+                playlistDao.insertTracksIntoPlaylist(
+                        trackIds, autoDjId, m_autoDJ.topInsertPosition++);
+            }
+            break;
+        }
+        case PlaylistDAO::AutoDJSendLoc::REPLACE:
+            playlistDao.addTracksToAutoDJQueue(trackIds,
+                    m_autoDJ.firstEnqueued
+                            ? PlaylistDAO::AutoDJSendLoc::BOTTOM
+                            : PlaylistDAO::AutoDJSendLoc::REPLACE);
+            break;
+        case PlaylistDAO::AutoDJSendLoc::BOTTOM:
+            playlistDao.addTracksToAutoDJQueue(
+                    trackIds, PlaylistDAO::AutoDJSendLoc::BOTTOM);
+            break;
+        }
+        m_autoDJ.firstEnqueued = true;
+    }
+    pumpAutoDJPipeline();
 }
 
 // static
@@ -331,7 +563,8 @@ QString SubsonicFeature::requestTrackDownload(const QString& nativeLocation) {
     return {};
 }
 
-QString SubsonicFeature::ensureCoverDownloaded(const QString& trackId) {
+QString SubsonicFeature::ensureCoverDownloaded(
+        const QString& coverArtId, int size) {
     ClientPtr pClient = ensureClient();
     if (!pClient) {
         return {};
@@ -339,10 +572,13 @@ QString SubsonicFeature::ensureCoverDownloaded(const QString& trackId) {
     try {
         // Subsonic servers resolve cover art for a song id directly.
         const rust::String path = subsonic::download_cover_art(
-                **pClient, trackId.toStdString(), m_cacheDir.toStdString());
+                **pClient,
+                coverArtId.toStdString(),
+                m_cacheDir.toStdString(),
+                static_cast<uint32_t>(size));
         return fromRust(path);
     } catch (const rust::Error& e) {
-        qInfo() << "No Subsonic cover art for" << trackId << ":" << e.what();
+        qInfo() << "No Subsonic cover art for" << coverArtId << ":" << e.what();
         return {};
     }
 }
@@ -447,6 +683,10 @@ TreeItem* SubsonicFeature::importLibrary() {
     }
 
     ScopedTransaction transaction(m_database);
+    // Clearing happens inside the transaction: other connections (the
+    // visible models) keep seeing the previous import until the commit
+    // atomically swaps in the fresh data.
+    SubsonicDAO::clearTables(m_database);
     SubsonicDAO dao;
     dao.initialize(m_database);
 
@@ -455,9 +695,16 @@ TreeItem* SubsonicFeature::importLibrary() {
         subsonic::ImportProgress progress(&m_cancelImport);
         const rust::Vec<subsonic::FfiTrack> tracks =
                 subsonic::fetch_all_tracks(**pClient, progress);
+        QSet<QString> coverArtIds;
         for (const subsonic::FfiTrack& track : tracks) {
             const QString trackId = fromRust(track.id);
             const QString suffix = fromRust(track.suffix);
+            QString coverArtId = fromRust(track.cover_art_id);
+            if (coverArtId.isEmpty()) {
+                // Servers resolve cover art for a song id directly.
+                coverArtId = trackId;
+            }
+            coverArtIds.insert(coverArtId);
             dao.importTrack(SubsonicTrackRow{
                     trackId,
                     fromRust(track.artist),
@@ -470,12 +717,18 @@ TreeItem* SubsonicFeature::importLibrary() {
                     makeLocation(trackId, suffix),
                     track.duration_seconds,
                     track.bitrate_kbps,
+                    coverArtId,
             });
             if (m_cancelImport.load()) {
                 transaction.commit();
                 return nullptr;
             }
         }
+
+        // Cover thumbnails are NOT fetched here: the library must become
+        // browsable as soon as the track pages are in. The ids are handed
+        // to a second background pass started after this import finishes.
+        m_pendingCoverArtIds = QStringList(coverArtIds.begin(), coverArtIds.end());
 
         const rust::Vec<subsonic::FfiPlaylist> playlists =
                 subsonic::fetch_playlists(**pClient);
@@ -531,5 +784,86 @@ void SubsonicFeature::onTrackCollectionLoaded() {
     }
     m_title = tr("Subsonic");
     emit featureLoadingFinished(this);
+    if (!m_pendingCoverArtIds.isEmpty()) {
+        startCoverFetch(m_pendingCoverArtIds);
+        m_pendingCoverArtIds.clear();
+    }
     activate();
+}
+
+void SubsonicFeature::startCoverFetch(const QStringList& coverArtIds) {
+    const int generation = ++m_coverGeneration;
+    m_coverFuture = QtConcurrent::run([this, generation, coverArtIds] {
+        QThreadPool coverPool;
+        coverPool.setMaxThreadCount(16);
+        QList<QPair<QString, QFuture<QString>>> downloads;
+        downloads.reserve(coverArtIds.size());
+        for (const QString& coverArtId : coverArtIds) {
+            downloads.append({coverArtId,
+                    QtConcurrent::run(&coverPool, [this, coverArtId] {
+                        return ensureCoverDownloaded(
+                                coverArtId, kCoverThumbnailSize);
+                    })});
+        }
+        QList<CoverFetchResult> results;
+        results.reserve(downloads.size());
+        for (auto& [coverArtId, future] : downloads) {
+            if (m_cancelImport.load() || generation != m_coverGeneration) {
+                coverPool.clear();
+                coverPool.waitForDone();
+                return;
+            }
+            future.waitForFinished();
+            const QString thumbPath = future.result();
+            if (thumbPath.isEmpty()) {
+                continue;
+            }
+            const QImage image(thumbPath);
+            if (image.isNull()) {
+                continue;
+            }
+            CoverInfoRelative coverInfo;
+            // Type/source must be set before attaching a non-null image
+            // (asserted by setImageDigest) and match what updateCoverArt
+            // stores in the DB columns.
+            coverInfo.type = CoverInfo::FILE;
+            coverInfo.source = CoverInfo::GUESSED;
+            coverInfo.coverLocation = thumbPath;
+            coverInfo.setImageDigest(image);
+            results.append(CoverFetchResult{coverArtId,
+                    thumbPath,
+                    coverInfo.imageDigest(),
+                    coverInfo.legacyHash()});
+        }
+        QMetaObject::invokeMethod(
+                this,
+                [this, generation, results] {
+                    applyCoverResults(generation, results);
+                },
+                Qt::QueuedConnection);
+    });
+}
+
+void SubsonicFeature::applyCoverResults(
+        int generation, const QList<CoverFetchResult>& results) {
+    // A newer import/cover pass supersedes this one. The generation also
+    // guarantees no import worker is holding a transaction on m_database
+    // right now (starting one bumps the generation).
+    if (generation != m_coverGeneration || results.isEmpty()) {
+        return;
+    }
+    ScopedTransaction transaction(m_database);
+    SubsonicDAO dao;
+    dao.initialize(m_database);
+    for (const CoverFetchResult& result : results) {
+        dao.updateCoverArt(result.coverArtId,
+                result.thumbPath,
+                result.imageDigest,
+                result.legacyHash);
+    }
+    transaction.commit();
+    // Repaint the visible views with the new cover columns.
+    m_trackSource->buildIndex();
+    m_pTrackModel->select();
+    m_pPlaylistModel->select();
 }

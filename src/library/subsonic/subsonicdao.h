@@ -1,6 +1,8 @@
 #pragma once
 
 #include <QHash>
+#include <QList>
+#include <QPair>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QString>
@@ -20,6 +22,7 @@ struct SubsonicTrackRow {
     QString location;
     int duration;
     int bitrate;
+    QString coverArtId;
 };
 
 /// Wrapper around the runtime-created Subsonic tables in the Mixxx
@@ -28,7 +31,14 @@ struct SubsonicTrackRow {
 class SubsonicDAO {
   public:
     static bool createTables(const QSqlDatabase& database);
+    /// The tables hold transient data (rebuilt on every activation), so
+    /// schema changes are handled by dropping and recreating them.
+    static void dropTables(const QSqlDatabase& database);
     static void clearTables(const QSqlDatabase& database);
+    /// Number of cached tracks, or 0 if the table is missing/empty.
+    static int trackCount(const QSqlDatabase& database);
+    /// Cached playlists as (database id, name), sorted by name.
+    static QList<QPair<int, QString>> allPlaylists(const QSqlDatabase& database);
 
     void initialize(const QSqlDatabase& database);
 
@@ -37,6 +47,12 @@ class SubsonicDAO {
     int importPlaylist(const QString& subsonicId, const QString& name);
     bool importPlaylistTrack(
             int playlistId, const QString& subsonicTrackId, int position);
+    /// Attaches a downloaded cover art file to every track that shares
+    /// the given cover art id.
+    bool updateCoverArt(const QString& coverArtId,
+            const QString& coverLocation,
+            const QByteArray& imageDigest,
+            quint16 legacyHash);
 
   private:
     QHash<QString, int> m_trackIdBySubsonicId;
@@ -45,4 +61,5 @@ class SubsonicDAO {
     QSqlQuery m_insertTrackQuery;
     QSqlQuery m_insertPlaylistQuery;
     QSqlQuery m_insertPlaylistTrackQuery;
+    QSqlQuery m_updateCoverArtQuery;
 };

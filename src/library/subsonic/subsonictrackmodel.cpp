@@ -21,13 +21,24 @@ TrackPointer SubsonicTrackModel::getTrack(const QModelIndex& index) const {
             index.sibling(index.row(), fieldIndex("location"))
                     .data()
                     .toString();
-    if (m_pFeature->requestTrackDownload(nativeLocation).isEmpty()) {
-        // Not cached yet: the download runs in the background and the
-        // track is loaded into a deck when it finishes. Never block the
-        // UI thread on the network here.
+    const QString cachePath = m_pFeature->cachePathForLocation(nativeLocation);
+    if (cachePath.isEmpty() || !QFileInfo::exists(cachePath)) {
+        // Deliberately side-effect-free: this is also called from
+        // selection/display paths. Downloads are triggered exclusively
+        // through prepareTrackLoad().
         return TrackPointer();
     }
     return BaseExternalTrackModel::getTrack(index);
+}
+
+bool SubsonicTrackModel::prepareTrackLoad(const QModelIndex& index) {
+    const QString nativeLocation =
+            index.sibling(index.row(), fieldIndex("location"))
+                    .data()
+                    .toString();
+    // Cached: proceed with the regular load. Otherwise a background
+    // download starts and the feature loads the track when it finishes.
+    return !m_pFeature->requestTrackDownload(nativeLocation).isEmpty();
 }
 
 TrackId SubsonicTrackModel::getTrackId(const QModelIndex& index) const {

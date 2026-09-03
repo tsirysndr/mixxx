@@ -74,10 +74,12 @@ mod ffi {
             suffix: &str,
             cache_dir: &str,
         ) -> Result<String>;
+        /// size > 0 requests a server-side scaled thumbnail; 0 = original.
         fn download_cover_art(
             client: &Client,
             cover_art_id: &str,
             cache_dir: &str,
+            size: u32,
         ) -> Result<String>;
         fn cache_file_name(track_id: &str, suffix: &str) -> String;
     }
@@ -144,8 +146,9 @@ fn download_cover_art(
     client: &Client,
     cover_art_id: &str,
     cache_dir: &str,
+    size: u32,
 ) -> Result<String, Error> {
-    crate::download::download_cover_art(&client.inner, cover_art_id, cache_dir)
+    crate::download::download_cover_art(&client.inner, cover_art_id, cache_dir, size)
 }
 
 fn cache_file_name(track_id: &str, suffix: &str) -> String {

@@ -110,6 +110,16 @@ class TrackModel {
     virtual TrackPointer getTrack(const QModelIndex& index) const = 0;
     virtual TrackPointer getTrackByRef(const TrackRef& trackRef) const = 0;
 
+    /// Called by views before getTrack() when the user explicitly requests
+    /// loading a track into a player (e.g. double-click, load-to-deck
+    /// shortcuts). Models backed by remote sources can start fetching the
+    /// underlying file and return false to defer the load until the file
+    /// is available locally; returning true proceeds with getTrack().
+    virtual bool prepareTrackLoad(const QModelIndex& index) {
+        Q_UNUSED(index);
+        return true;
+    }
+
     /// Get the URL of the track at the given QModelIndex.
     ///
     /// This function should be used in favor of getTrackId() to allow
