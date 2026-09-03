@@ -45,14 +45,31 @@ DlgSubsonicConnection::DlgSubsonicConnection(
     m_pPasswordEdit = new QLineEdit(this);
     m_pPasswordEdit->setMinimumWidth(320);
     m_pPasswordEdit->setEchoMode(QLineEdit::Password);
-    // Prefer the keychain; fall back to a legacy plaintext config value.
-    QString password = subsoniccredentials::read(
-            m_pHostEdit->text().trimmed(), m_pUsernameEdit->text().trimmed());
-    if (password.isEmpty()) {
-        password = m_pConfig->getValue(
-                ConfigKey(kConfigGroup, QStringLiteral("Password")), QString());
+    // Show the legacy plaintext config value (if any) right away; the
+    // keychain lookup happens asynchronously below, because a blocking
+    // read here keeps the dialog from appearing while macOS shows (or
+    // hides...) a keychain authorization prompt.
+    const QString fallbackPassword = m_pConfig->getValue(
+            ConfigKey(kConfigGroup, QStringLiteral("Password")), QString());
+    m_pPasswordEdit->setText(fallbackPassword);
+    const QString host = m_pHostEdit->text().trimmed();
+    const QString username = m_pUsernameEdit->text().trimmed();
+    if (!host.isEmpty()) {
+        connect(&m_passwordWatcher,
+                &QFutureWatcher<QString>::finished,
+                this,
+                [this, fallbackPassword] {
+                    const QString password = m_passwordWatcher.result();
+                    // Populate only if the user has not typed meanwhile.
+                    if (!password.isEmpty() &&
+                            m_pPasswordEdit->text() == fallbackPassword) {
+                        m_pPasswordEdit->setText(password);
+                    }
+                });
+        m_passwordWatcher.setFuture(QtConcurrent::run([host, username] {
+            return subsoniccredentials::read(host, username);
+        }));
     }
-    m_pPasswordEdit->setText(password);
 
     m_pIgnoreTlsErrors = new QCheckBox(tr("Ignore TLS certificate errors (insecure)"), this);
     m_pIgnoreTlsErrors->setChecked(!m_pConfig->getValue(
@@ -91,6 +108,7 @@ DlgSubsonicConnection::DlgSubsonicConnection(
 
 DlgSubsonicConnection::~DlgSubsonicConnection() {
     m_testWatcher.waitForFinished();
+    m_passwordWatcher.waitForFinished();
 }
 
 void DlgSubsonicConnection::slotTestConnection() {
