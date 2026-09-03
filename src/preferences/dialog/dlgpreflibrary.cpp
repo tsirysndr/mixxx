@@ -342,6 +342,12 @@ void DlgPrefLibrary::slotUpdate() {
             ConfigKey("[Library]", "ShowRekordboxLibrary"), true));
     checkBox_show_serato->setChecked(m_pConfig->getValue(
             ConfigKey("[Library]", "ShowSeratoLibrary"), true));
+#ifdef __SUBSONIC__
+    checkBox_show_subsonic->setChecked(m_pConfig->getValue(
+            ConfigKey("[Library]", "ShowSubsonicLibrary"), true));
+#else
+    checkBox_show_subsonic->setVisible(false);
+#endif
 
     QString dateFormat = m_pConfig->getValue(
             kDateFormatConfigKey,
@@ -632,6 +638,10 @@ void DlgPrefLibrary::slotApply() {
             ConfigValue((int)checkBox_show_rekordbox->isChecked()));
     m_pConfig->set(ConfigKey("[Library]", "ShowSeratoLibrary"),
             ConfigValue((int)checkBox_show_serato->isChecked()));
+#ifdef __SUBSONIC__
+    m_pConfig->set(ConfigKey("[Library]", "ShowSubsonicLibrary"),
+            ConfigValue((int)checkBox_show_subsonic->isChecked()));
+#endif
 
     int coverartfetcherquality_status;
     if (radioButton_cover_art_fetcher_highest->isChecked()) {
