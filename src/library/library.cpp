@@ -23,6 +23,9 @@
 #include "library/rekordbox/rekordboxfeature.h"
 #include "library/rhythmbox/rhythmboxfeature.h"
 #include "library/serato/seratofeature.h"
+#ifdef __SUBSONIC__
+#include "library/subsonic/subsonicfeature.h"
+#endif
 #include "library/sidebarmodel.h"
 #include "library/trackcollection.h"
 #include "library/trackcollectionmanager.h"
@@ -216,6 +219,14 @@ Library::Library(
                 ConfigKey(kConfigGroup, "ShowSeratoLibrary"), true)) {
         addFeature(new SeratoFeature(this, m_pConfig));
     }
+
+#ifdef __SUBSONIC__
+    if (SubsonicFeature::isSupported() &&
+            m_pConfig->getValue(
+                    ConfigKey(kConfigGroup, "ShowSubsonicLibrary"), true)) {
+        addFeature(new SubsonicFeature(this, m_pConfig));
+    }
+#endif
 
     for (const auto& externalTrackCollection : m_pTrackCollectionManager->externalCollections()) {
         auto* feature = externalTrackCollection->newLibraryFeature(this, m_pConfig);

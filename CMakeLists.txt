@@ -3687,6 +3687,99 @@ endif()
 target_include_directories(MP3GuessEnc SYSTEM PUBLIC lib/mp3guessenc-0.27.4)
 target_link_libraries(mixxx-lib PRIVATE MP3GuessEnc)
 
+# Subsonic/Navidrome music server support (Rust protocol layer in lib/subsonic-rs)
+find_program(CARGO_EXECUTABLE cargo)
+default_option(
+  SUBSONIC
+  "Support for browsing Subsonic/Navidrome music servers (requires Rust toolchain)"
+  "CARGO_EXECUTABLE"
+)
+message(STATUS "Support for Subsonic/Navidrome: ${SUBSONIC}")
+if(SUBSONIC)
+  if(NOT CARGO_EXECUTABLE)
+    message(
+      FATAL_ERROR
+      "SUBSONIC=ON requires a Rust toolchain (cargo). Install it from https://rustup.rs or configure with -DSUBSONIC=OFF."
+    )
+  endif()
+  find_package(Corrosion QUIET)
+  if(NOT Corrosion_FOUND)
+    include(FetchContent)
+    FetchContent_Declare(
+      Corrosion
+      GIT_REPOSITORY "https://github.com/corrosion-rs/corrosion.git"
+      GIT_TAG "v0.5.2"
+    )
+    FetchContent_MakeAvailable(Corrosion)
+  endif()
+  corrosion_import_crate(
+    MANIFEST_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lib/subsonic-rs/Cargo.toml"
+    CRATE_TYPES staticlib
+    FEATURES ffi
+  )
+  # Secure password storage for the Subsonic connection dialog.
+  # QTKEYCHAIN_STATIC is essential: a shared qtkeychain would duplicate the
+  # statically linked Qt inside a dylib (ObjC class clashes on macOS).
+  set(BUILD_WITH_QT6 ON CACHE BOOL "" FORCE)
+  set(QTKEYCHAIN_STATIC ON CACHE BOOL "" FORCE)
+  set(BUILD_TEST_APPLICATION OFF CACHE BOOL "" FORCE)
+  set(BUILD_TRANSLATIONS OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    qtkeychain
+    GIT_REPOSITORY "https://github.com/frankosterfeld/qtkeychain.git"
+    GIT_TAG "0.14.3"
+  )
+  FetchContent_MakeAvailable(qtkeychain)
+  target_link_libraries(mixxx-lib PRIVATE qt6keychain)
+  target_include_directories(
+    mixxx-lib
+    SYSTEM
+    PRIVATE "${qtkeychain_SOURCE_DIR}" "${qtkeychain_BINARY_DIR}"
+  )
+  corrosion_add_cxxbridge(subsonic-bridge CRATE subsonic_rs FILES bridge.rs)
+  # The generated bridge code includes library/subsonic/subsonicimportprogress.h
+  target_include_directories(
+    subsonic-bridge
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  )
+  target_link_libraries(mixxx-lib PRIVATE subsonic-bridge)
+  if(APPLE)
+    # Native TLS root store and proxy detection used by the Rust crate
+    target_link_libraries(
+      mixxx-lib
+      PRIVATE
+      "-framework Security"
+      "-framework CoreFoundation"
+      "-framework SystemConfiguration"
+    )
+  elseif(WIN32)
+    target_link_libraries(
+      mixxx-lib
+      PRIVATE crypt32 secur32 ncrypt ws2_32 userenv bcrypt ntdll
+    )
+  endif()
+  target_compile_definitions(mixxx-lib PUBLIC __SUBSONIC__)
+  target_sources(
+    mixxx-lib
+    PRIVATE
+    src/library/subsonic/dlgsubsonicconnection.cpp
+    src/library/subsonic/subsoniccredentials.cpp
+    src/library/subsonic/subsonicdao.cpp
+    src/library/subsonic/subsonicfeature.cpp
+    src/library/subsonic/subsonicimportprogress.cpp
+    src/library/subsonic/subsonicplaylistmodel.cpp
+    src/library/subsonic/subsonictrackmodel.cpp
+  )
+  if(BUILD_TESTING)
+    add_test(
+      NAME subsonic_rs_cargo_test
+      COMMAND
+        ${CARGO_EXECUTABLE} test --manifest-path
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/subsonic-rs/Cargo.toml
+    )
+  endif()
+endif()
+
 # OpenGL
 option(QGLES2 "Use GLES 2.0 (or higher) instead of full OpenGL for UNIX" OFF)
 if(IOS)
