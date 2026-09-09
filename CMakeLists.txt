@@ -3701,11 +3701,17 @@ default_option(
   "CARGO_EXECUTABLE"
 )
 message(STATUS "Support for Rocksky: ${ROCKSKY}")
-if(SUBSONIC OR ROCKSKY)
+default_option(
+  MCP
+  "Model Context Protocol server so AI agents can control Mixxx (requires Rust toolchain)"
+  "CARGO_EXECUTABLE"
+)
+message(STATUS "Support for AI agent control (MCP): ${MCP}")
+if(SUBSONIC OR ROCKSKY OR MCP)
   if(NOT CARGO_EXECUTABLE)
     message(
       FATAL_ERROR
-      "SUBSONIC/ROCKSKY require a Rust toolchain (cargo). Install it from https://rustup.rs or disable the options."
+      "SUBSONIC/ROCKSKY/MCP require a Rust toolchain (cargo). Install it from https://rustup.rs or disable the options."
     )
   endif()
   find_package(Corrosion QUIET)
@@ -3727,6 +3733,9 @@ if(SUBSONIC OR ROCKSKY)
   endif()
   if(ROCKSKY)
     list(APPEND MIXXX_RUST_FEATURES rocksky)
+  endif()
+  if(MCP)
+    list(APPEND MIXXX_RUST_FEATURES mcp)
   endif()
   corrosion_import_crate(
     MANIFEST_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lib/mixxx-rust/Cargo.toml"
@@ -3816,6 +3825,55 @@ if(ROCKSKY)
       COMMAND
         ${CARGO_EXECUTABLE} test --manifest-path
         ${CMAKE_CURRENT_SOURCE_DIR}/lib/rocksky-rs/Cargo.toml
+    )
+  endif()
+endif()
+
+# Model Context Protocol server (Rust layer in lib/mcp; the MCP option
+# itself is declared alongside SUBSONIC above). Two artifacts: the server
+# linked into Mixxx, and the `mixxx-mcp` CLI an agent spawns.
+if(MCP)
+  corrosion_add_cxxbridge(mcp-bridge CRATE mixxx_rust FILES mcp_bridge.rs)
+  # The generated bridge code includes mcp/mcprequesthandler.h
+  target_include_directories(
+    mcp-bridge
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  )
+  target_link_libraries(mixxx-lib PRIVATE mcp-bridge)
+  target_compile_definitions(mixxx-lib PUBLIC __MCP__)
+  target_sources(mixxx-lib PRIVATE src/mcp/mcpservice.cpp)
+
+  # The CLI is a separate binary rather than part of mixxx-lib: agent
+  # hosts spawn it, Mixxx never runs it. Always release-built; a debug
+  # build of the TLS/websocket stack is needlessly slow.
+  set(MIXXX_MCP_CLI "${CMAKE_BINARY_DIR}/mcp-cli/release/mixxx-mcp${CMAKE_EXECUTABLE_SUFFIX}")
+  add_custom_command(
+    OUTPUT "${MIXXX_MCP_CLI}"
+    COMMAND
+      ${CMAKE_COMMAND} -E env ${CARGO_EXECUTABLE} build --release
+      --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/lib/mcp/Cargo.toml" --bin
+      mixxx-mcp --target-dir "${CMAKE_BINARY_DIR}/mcp-cli"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/lib/mcp/Cargo.toml"
+      "${CMAKE_CURRENT_SOURCE_DIR}/lib/mcp/src/lib.rs"
+      "${CMAKE_CURRENT_SOURCE_DIR}/lib/mcp/src/mcp.rs"
+      "${CMAKE_CURRENT_SOURCE_DIR}/lib/mcp/src/client.rs"
+      "${CMAKE_CURRENT_SOURCE_DIR}/lib/mcp/src/tools.rs"
+      "${CMAKE_CURRENT_SOURCE_DIR}/lib/mcp/src/protocol.rs"
+      "${CMAKE_CURRENT_SOURCE_DIR}/lib/mcp/src/endpoint.rs"
+      "${CMAKE_CURRENT_SOURCE_DIR}/lib/mcp/src/bin/mixxx-mcp.rs"
+    COMMENT "Building the mixxx-mcp CLI"
+    VERBATIM
+  )
+  add_custom_target(mixxx-mcp-cli ALL DEPENDS "${MIXXX_MCP_CLI}")
+  install(PROGRAMS "${MIXXX_MCP_CLI}" DESTINATION "${MIXXX_INSTALL_BINDIR}")
+
+  if(BUILD_TESTING)
+    add_test(
+      NAME mixxx_mcp_cargo_test
+      COMMAND
+        ${CARGO_EXECUTABLE} test --manifest-path
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/mcp/Cargo.toml --all-features
     )
   endif()
 endif()

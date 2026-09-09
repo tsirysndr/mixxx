@@ -17,6 +17,7 @@ class RecordingManager;
 class BroadcastManager;
 class RockskyService;
 #endif
+class McpService;
 class ControllerManager;
 class VinylControlManager;
 class TrackCollectionManager;
@@ -72,6 +73,12 @@ class CoreServices : public QObject {
     std::shared_ptr<ControllerManager> getControllerManager() const {
         return m_pControllerManager;
     }
+
+#ifdef __MCP__
+    std::shared_ptr<McpService> getMcpService() const {
+        return m_pMcpService;
+    }
+#endif
 
     std::shared_ptr<VinylControlManager> getVinylControlManager() const {
         return m_pVCManager;
@@ -132,6 +139,9 @@ class CoreServices : public QObject {
 #endif
 #ifdef __ROCKSKY__
     std::shared_ptr<RockskyService> m_pRockskyService;
+#endif
+#ifdef __MCP__
+    std::shared_ptr<McpService> m_pMcpService;
 #endif
     std::shared_ptr<ControllerManager> m_pControllerManager;
 

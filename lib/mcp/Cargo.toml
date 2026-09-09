@@ -1,0 +1,56 @@
+[package]
+name = "mixxx-mcp"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "GPL-2.0-or-later"
+description = "Model Context Protocol server for controlling Mixxx from an AI agent"
+publish = false
+
+# Two halves of one protocol, kept in one crate so the RPC surface and the
+# MCP tool catalogue cannot drift apart:
+#   * `server` is linked into Mixxx (through the lib/mixxx-rust umbrella
+#     staticlib) and exposes the control surface over a loopback JSON-RPC
+#     endpoint.
+#   * `cli` builds the `mixxx-mcp` binary that an agent spawns; it speaks
+#     MCP on stdio and forwards to that endpoint.
+[features]
+default = ["cli"]
+server = [
+  "dep:jsonrpsee-server",
+  "dep:tower",
+  "dep:tower-http",
+  "dep:getrandom",
+  "dep:http",
+  "dep:tokio",
+]
+cli = ["dep:jsonrpsee-ws-client", "dep:jsonrpsee-core", "dep:http", "dep:tokio"]
+
+[[bin]]
+name = "mixxx-mcp"
+required-features = ["cli"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+
+jsonrpsee-server = { version = "0.26", optional = true }
+jsonrpsee-ws-client = { version = "0.26", optional = true }
+jsonrpsee-core = { version = "0.26", features = ["client"], optional = true }
+http = { version = "1", optional = true }
+tower = { version = "0.5", optional = true }
+tower-http = { version = "0.6", features = [
+  "auth",
+  "validate-request",
+], optional = true }
+getrandom = { version = "0.3", optional = true }
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "sync",
+  "time",
+  "io-std",
+  "io-util",
+  "macros",
+], optional = true }
+
+[workspace]

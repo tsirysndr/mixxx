@@ -11,6 +11,9 @@
 #ifdef __BROADCAST__
 #include "broadcast/broadcastmanager.h"
 #endif
+#ifdef __MCP__
+#include "mcp/mcpservice.h"
+#endif
 #ifdef __ROCKSKY__
 #include "rocksky/rockskyservice.h"
 #endif
@@ -644,6 +647,14 @@ void CoreServices::initialize(QApplication* pApp) {
     );
 #endif
 
+#ifdef __MCP__
+    // Loopback JSON-RPC endpoint an AI agent drives through the mixxx-mcp
+    // CLI. Constructed after PlayerManager and the track collection,
+    // which are what its requests act on.
+    m_pMcpService = std::make_shared<McpService>(
+            pConfig, m_pPlayerManager.get(), m_pTrackCollectionManager.get());
+#endif
+
     OverviewCache* pOverviewCache = OverviewCache::createInstance(pConfig, m_pDbConnectionPool);
     connect(&(m_pTrackCollectionManager->internalCollection()->getTrackDAO()),
             &TrackDAO::waveformSummaryUpdated,
@@ -977,6 +988,11 @@ void CoreServices::finalize() {
     // the data models.
     // Depends on RecordingManager and PlayerManager
     qDebug() << t.elapsed(false).debugMillisWithUnit() << "deleting Library";
+#ifdef __MCP__
+    // Stops the listener while PlayerManager and the track collection its
+    // handlers touch are still alive.
+    m_pMcpService.reset();
+#endif
 #ifdef __ROCKSKY__
     // Stops the remote player and joins its command loop while the track
     // collection and PlayerInfo it observes are still alive.

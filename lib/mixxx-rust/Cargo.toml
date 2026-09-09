@@ -20,9 +20,13 @@ crate-type = ["staticlib"]
 default = []
 subsonic = ["dep:subsonic-rs"]
 rocksky = ["dep:rocksky-rs"]
+mcp = ["dep:mixxx-mcp"]
 
 [dependencies]
 cxx = "1.0"
+mixxx-mcp = { path = "../mcp", default-features = false, features = [
+  "server",
+], optional = true }
 rocksky-rs = { path = "../rocksky-rs", optional = true }
 subsonic-rs = { path = "../subsonic-rs", optional = true }
 

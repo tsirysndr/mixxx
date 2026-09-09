@@ -4,6 +4,9 @@
 //! rocksky-rs), which stay bridge-free so their `cargo test` links
 //! without any C++ side.
 
+#[cfg(feature = "mcp")]
+mod mcp_bridge;
+
 #[cfg(feature = "rocksky")]
 mod rocksky_bridge;
 
