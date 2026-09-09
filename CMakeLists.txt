@@ -3873,7 +3873,17 @@ if(MCP)
     VERBATIM
   )
   add_custom_target(mixxx-mcp-cli ALL DEPENDS "${MIXXX_MCP_CLI}")
-  install(PROGRAMS "${MIXXX_MCP_CLI}" DESTINATION "${MIXXX_INSTALL_BINDIR}")
+  if(APPLE AND MACOS_BUNDLE)
+    # Inside the bundle, so the CLI travels with the app and is covered by
+    # its (deep) signature. Agents point at
+    # /Applications/Mixxx.app/Contents/MacOS/mixxx-mcp.
+    install(
+      PROGRAMS "${MIXXX_MCP_CLI}"
+      DESTINATION "${MIXXX_INSTALL_PREFIX}/Contents/MacOS"
+    )
+  else()
+    install(PROGRAMS "${MIXXX_MCP_CLI}" DESTINATION "${MIXXX_INSTALL_BINDIR}")
+  endif()
 
   if(BUILD_TESTING)
     add_test(
