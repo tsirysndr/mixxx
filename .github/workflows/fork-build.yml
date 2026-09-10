@@ -40,6 +40,12 @@ permissions:
   contents: read
 
 env:
+  # The Subsonic, Rocksky and MCP layers are Rust (lib/mixxx-rust and the
+  # crates it pulls in), so cargo is a hard requirement: CMake aborts with
+  # "SUBSONIC/ROCKSKY/MCP require a Rust toolchain" without it. The crates
+  # declare an MSRV of 1.85; "stable" is what they are developed against.
+  RUST_TOOLCHAIN: stable
+
   # Pre-existing warnings in the fork's own sources must not fail the build,
   # and the unit tests are not what this workflow is for.
   FORK_CMAKE_ARGS: >-
@@ -82,6 +88,27 @@ jobs:
 
       - name: "Install build tools"
         run: brew install ccache ninja
+
+      - name: "Set up the Rust toolchain"
+        # The runner images do ship rustup, but asking for the toolchain
+        # explicitly means an image update cannot silently swap the compiler,
+        # and a missing toolchain fails here with a clear message instead of
+        # deep inside the CMake configure step.
+        run: |
+          rustup toolchain install ${{ env.RUST_TOOLCHAIN }} --profile minimal
+          rustup default ${{ env.RUST_TOOLCHAIN }}
+          cargo --version
+          rustc --version --verbose
+
+      - name: "Set up GitHub cache for the cargo registry"
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: fork-cargo-macos-15-${{ hashFiles('lib/**/Cargo.lock') }}
+          restore-keys: fork-cargo-macos-15-
 
       - name: "Get build environment name"
         run: tools/macos_release_buildenv.sh name
@@ -189,6 +216,25 @@ jobs:
         # The Subsonic feature builds qtkeychain from source; libsecret is
         # what gives it a real backend on Linux instead of a stub.
         run: sudo apt-get install -y ccache libsecret-1-dev
+
+      - name: "Set up the Rust toolchain"
+        # See the macOS job: cargo is required, so pin it rather than
+        # inheriting whatever the runner image happens to ship.
+        run: |
+          rustup toolchain install ${{ env.RUST_TOOLCHAIN }} --profile minimal
+          rustup default ${{ env.RUST_TOOLCHAIN }}
+          cargo --version
+          rustc --version --verbose
+
+      - name: "Set up GitHub cache for the cargo registry"
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: fork-cargo-ubuntu-24.04-${{ hashFiles('lib/**/Cargo.lock') }}
+          restore-keys: fork-cargo-ubuntu-24.04-
 
       - name: "Set up GitHub cache for ccache"
         uses: actions/cache@v6
