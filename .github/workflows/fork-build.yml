@@ -1,0 +1,294 @@
+# Builds THIS FORK (Subsonic browser, Rocksky, MCP server) for macOS and
+# Linux and attaches the packages to a GitHub release.
+#
+# It deliberately runs on nothing that the upstream workflows listen to:
+#
+#   * develop.yml  -> push to any branch except main, and pull_request
+#   * release.yml  -> push to main / "[0-9].[0-9]", tags "[0-9].[0-9].[0-9]"
+#                     and "[0-9].[0-9]-*"
+#
+# so the trigger here is a manual dispatch plus "v*" tags (v2.7.0-mcp1,
+# v2.7.0-fork3, ...). A "v" prefix cannot match upstream's tag patterns,
+# which all start with a digit, and tag pushes never match their branch
+# filters. Tag this fork as "v…" and only this workflow runs.
+name: Fork Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: "Which platforms to build"
+        type: choice
+        options:
+          - both
+          - macos
+          - linux
+        default: both
+      release_tag:
+        description: "Attach the packages to this release (created if missing). Leave empty to only keep workflow artifacts."
+        type: string
+        default: ""
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: fork-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Pre-existing warnings in the fork's own sources must not fail the build,
+  # and the unit tests are not what this workflow is for.
+  FORK_CMAKE_ARGS: >-
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo
+    -DWARNINGS_FATAL=OFF
+    -DDEBUG_ASSERTIONS_FATAL=OFF
+    -DBUILD_TESTING=OFF
+    -DBUILD_BENCH=OFF
+    -DSUBSONIC=ON
+    -DROCKSKY=ON
+    -DMCP=ON
+    -DBATTERY=ON
+    -DBROADCAST=ON
+    -DDOWNLOAD_MANUAL=ON
+    -DHID=ON
+    -DKEYFINDER=ON
+    -DLILV=ON
+    -DOPUS=ON
+    -DQTKEYCHAIN=ON
+    -DVINYLCONTROL=ON
+
+jobs:
+  macos:
+    name: macOS arm64 DMG
+    # Never build upstream, should these commits ever end up in a PR there.
+    if: >-
+      github.repository_owner != 'mixxxdj'
+      && (github.event_name != 'workflow_dispatch'
+          || github.event.inputs.platforms != 'linux')
+    runs-on: macos-15
+    steps:
+      - name: "Check out repository"
+        uses: actions/checkout@v7
+        with:
+          # `git describe` names the build, so the full history is needed.
+          fetch-depth: 0
+
+      - name: "Ensure that all tags are fetched"
+        run: git fetch origin --force --tags
+
+      - name: "Install build tools"
+        run: brew install ccache ninja
+
+      - name: "Get build environment name"
+        run: tools/macos_release_buildenv.sh name
+
+      - name: "Set up build environment"
+        run: tools/macos_release_buildenv.sh setup
+        env:
+          BUILDENV_BASEPATH: /Users/runner/buildenv
+
+      - name: "Set up GitHub cache for ccache"
+        uses: actions/cache@v6
+        with:
+          path: /Users/runner/Library/Caches/ccache
+          key: fork-macos-15-arm64-${{ github.ref_name }}-${{ github.run_number }}
+          restore-keys: |
+            fork-macos-15-arm64-${{ github.ref_name }}
+            fork-macos-15-arm64
+
+      - name: "Set up ccache"
+        run: |
+          ccache --zero-stats
+          ccache --max-size=2G
+
+      - name: "Configure"
+        # APPLE_CODESIGN_IDENTITY=- is an ad-hoc signature: a checksum, no
+        # certificate. arm64 macOS refuses to run unsigned binaries at all,
+        # so this is the minimum that works without an Apple identity. It is
+        # also the default when nothing is passed; pinning it here keeps the
+        # DMG signed even if that default changes. Packaging (cpack) runs the
+        # bundle install script, which fixes up the dylibs and signs the app
+        # and everything nested in it, mixxx-mcp included.
+        run: >-
+          mkdir build && cd build && cmake ${{ env.FORK_CMAKE_ARGS }}
+          -DMACOS_BUNDLE=ON
+          -DAPPLE_CODESIGN_IDENTITY=-
+          -DBULK=ON
+          -DCOREAUDIO=ON
+          -DHSS1394=ON
+          -DMODPLUG=ON
+          -DQT6=ON
+          -DQML=ON
+          -DWAVPACK=ON
+          -L
+          ..
+
+      - name: "Set up clang problem matcher"
+        uses: ammaraskar/gcc-problem-matcher@0.3.0
+
+      - name: "Build"
+        run: cmake --build .
+        working-directory: build
+        env:
+          CCACHE_NOCOMPRESS: true
+
+      - name: "Print compiler cache stats"
+        run: ccache --show-stats
+
+      - name: "Package"
+        # hdiutil hits a race condition on the runners often enough that
+        # upstream retries it too; see actions/runner-images#7522.
+        uses: nick-fields/retry@v4
+        with:
+          timeout_minutes: 30
+          max_attempts: 12
+          retry_wait_seconds: 1
+          command: cd build && cpack -G DragNDrop -V
+
+      - name: "Verify the ad-hoc signature"
+        # Catches a bundle that fixup_bundle left unsigned or inconsistent,
+        # which otherwise only shows up as "damaged, move to Bin" on launch.
+        run: |
+          hdiutil attach build/*.dmg -mountpoint /tmp/mixxx-dmg -nobrowse -readonly
+          codesign --verify --deep --strict --verbose=2 /tmp/mixxx-dmg/Mixxx.app
+          codesign --display --verbose=2 /tmp/mixxx-dmg/Mixxx.app
+          hdiutil detach /tmp/mixxx-dmg
+
+      - name: "Upload artifacts"
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-arm64-dmg
+          path: |
+            build/*.dmg
+            build/mcp-cli/release/mixxx-mcp
+
+  linux:
+    name: Ubuntu 24.04 DEB
+    if: >-
+      github.repository_owner != 'mixxxdj'
+      && (github.event_name != 'workflow_dispatch'
+          || github.event.inputs.platforms != 'macos')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: "Check out repository"
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: "Ensure that all tags are fetched"
+        run: git fetch origin --force --tags
+
+      - name: "Set up build environment"
+        run: tools/debian_buildenv.sh setup
+
+      - name: "Install fork-specific dependencies"
+        # The Subsonic feature builds qtkeychain from source; libsecret is
+        # what gives it a real backend on Linux instead of a stub.
+        run: sudo apt-get install -y ccache libsecret-1-dev
+
+      - name: "Set up GitHub cache for ccache"
+        uses: actions/cache@v6
+        with:
+          path: /home/runner/.cache/ccache
+          key: fork-ubuntu-24.04-${{ github.ref_name }}-${{ github.run_number }}
+          restore-keys: |
+            fork-ubuntu-24.04-${{ github.ref_name }}
+            fork-ubuntu-24.04
+
+      - name: "Set up ccache"
+        run: |
+          ccache --zero-stats
+          ccache --max-size=2G
+
+      - name: "Configure"
+        run: >-
+          mkdir build && cd build && cmake ${{ env.FORK_CMAKE_ARGS }}
+          -DQT6=ON
+          -DQML=ON
+          -DBULK=ON
+          -DFFMPEG=ON
+          -DLOCALECOMPARE=ON
+          -DMAD=ON
+          -DMODPLUG=ON
+          -DWAVPACK=ON
+          -DINSTALL_USER_UDEV_RULES=OFF
+          -L
+          ..
+
+      - name: "Set up gcc problem matcher"
+        uses: ammaraskar/gcc-problem-matcher@0.3.0
+
+      - name: "Build"
+        run: cmake --build .
+        working-directory: build
+        env:
+          CCACHE_NOCOMPRESS: true
+
+      - name: "Print compiler cache stats"
+        run: ccache --show-stats
+
+      - name: "Package"
+        run: cpack -G DEB -V
+        working-directory: build
+
+      - name: "Upload artifacts"
+        uses: actions/upload-artifact@v7
+        with:
+          name: ubuntu-24.04-deb
+          path: |
+            build/*.deb
+            build/mcp-cli/release/mixxx-mcp
+
+  publish:
+    name: Attach packages to the release
+    needs:
+      - macos
+      - linux
+    # always(), so a run limited to one platform still publishes what it
+    # did build. Only tags (or an explicit release_tag) get a release.
+    if: >-
+      always()
+      && github.repository_owner != 'mixxxdj'
+      && (startsWith(github.ref, 'refs/tags/') || github.event.inputs.release_tag != '')
+      && contains(needs.*.result, 'success')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # to create the release and upload assets
+    steps:
+      - name: "Download built packages"
+        uses: actions/download-artifact@v7
+        with:
+          path: packages
+          merge-multiple: true
+
+      - name: "Create the release if it does not exist yet"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
+        run: |
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists, reusing it."
+          else
+            gh release create "${TAG}" \
+              --target "${GITHUB_SHA}" \
+              --title "Mixxx ${TAG} (fork build)" \
+              --notes "Unofficial build of ${GITHUB_SHA} with the Subsonic browser, Rocksky and the MCP server. The macOS DMG is ad-hoc signed only (no Apple identity): right-click → Open on first launch."
+          fi
+
+      - name: "Upload the packages as release assets"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
+        run: |
+          shopt -s nullglob
+          assets=(packages/*.dmg packages/*.deb)
+          if [ ${#assets[@]} -eq 0 ]; then
+            echo "::error::No packages were built, nothing to attach."
+            exit 1
+          fi
+          printf 'Attaching: %s\n' "${assets[@]}"
+          gh release upload "${TAG}" "${assets[@]}" --clobber
