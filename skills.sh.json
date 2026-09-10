@@ -1,0 +1,11 @@
+{
+  "$schema": "https://skills.sh/schemas/skills.sh.schema.json",
+  "notGrouped": "bottom",
+  "groupings": [
+    {
+      "title": "Mixxx",
+      "description": "Skills for DJing with Mixxx through its MCP server — picking tracks that mix, beatmatching them, running transitions and managing the Auto DJ queue.",
+      "skills": ["mixxx-ai-dj"]
+    }
+  ]
+}
