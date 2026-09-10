@@ -16,6 +16,8 @@
 
 class ControlProxy;
 class PlayerManager;
+class QSqlQuery;
+class SubsonicFeature;
 class TrackCollectionManager;
 
 /// Serves the Model Context Protocol bridge: a loopback JSON-RPC endpoint
@@ -36,6 +38,7 @@ class McpService : public QObject {
     McpService(UserSettingsPointer pConfig,
             PlayerManager* pPlayerManager,
             TrackCollectionManager* pTrackCollectionManager,
+            SubsonicFeature* pSubsonicFeature,
             QObject* pParent = nullptr);
     ~McpService() override;
 
@@ -96,6 +99,14 @@ class McpService : public QObject {
     QJsonValue autoDjEdit(const QJsonObject& params);
     QJsonValue getControl(const QJsonObject& params);
     QJsonValue setControl(const QJsonObject& params);
+    QJsonValue subsonicStatus(const QJsonObject& params);
+    QJsonValue subsonicRefresh(const QJsonObject& params);
+    QJsonValue subsonicBrowse(const QJsonObject& params);
+    QJsonValue subsonicSearch(const QJsonObject& params);
+    QJsonValue subsonicPlaylists(const QJsonObject& params);
+    QJsonValue subsonicPlaylist(const QJsonObject& params);
+    QJsonValue subsonicLoad(const QJsonObject& params);
+    QJsonValue subsonicAutoDjAdd(const QJsonObject& params);
 
     // --- helpers ----------------------------------------------------
     /// Validates a 1-based deck number and returns its "[ChannelN]" group.
@@ -105,9 +116,19 @@ class McpService : public QObject {
     TrackPointer resolveTrack(const QJsonObject& params) const;
     int autoDjPlaylistId() const;
 
+    /// The Subsonic feature, or a failed request if this build/session has
+    /// no Subsonic library.
+    SubsonicFeature* requireSubsonic() const;
+    /// One Subsonic row as JSON, including whether it is already cached
+    /// locally (i.e. whether loading it is instant).
+    QJsonObject subsonicTrackRowToJson(const QSqlQuery& query) const;
+    /// Resolves "subsonic_id" or "location" into a subsonic:// location.
+    QString subsonicLocation(const QJsonObject& params, const char* idKey) const;
+
     UserSettingsPointer m_pConfig;
     PlayerManager* const m_pPlayerManager;
     TrackCollectionManager* const m_pTrackCollectionManager;
+    SubsonicFeature* const m_pSubsonicFeature;
 
     QHash<QString, Handler> m_handlers;
     std::optional<rust::Box<mixxxmcp::Server>> m_pServer;

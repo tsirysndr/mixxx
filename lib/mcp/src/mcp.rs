@@ -34,6 +34,13 @@ Typical flow for DJing a set:
   3. mixxx_wait_until with remaining_seconds to sleep until the outro.
   4. mixxx_crossfade to perform the transition.
 
+The local library (mixxx_search_library, track ids) and an attached
+Subsonic/Navidrome server (mixxx_subsonic_*, server-side ids) are separate
+collections: ids from one do not work with the other. mixxx_subsonic_status
+says whether there is a Subsonic library at all; mixxx_subsonic_browse walks
+it by artist/album, and mixxx_subsonic_load / mixxx_subsonic_autodj_add
+download the tracks on the way to a deck or the queue.
+
 Anything not covered by a typed tool is reachable through
 mixxx_get_control / mixxx_set_control.";
 

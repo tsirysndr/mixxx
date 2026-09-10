@@ -168,6 +168,18 @@ bool SubsonicFeature::isConfigured() const {
                     .isEmpty();
 }
 
+bool SubsonicFeature::isImporting() const {
+    return m_future.isRunning();
+}
+
+bool SubsonicFeature::refreshLibrary() {
+    if (!isConfigured()) {
+        return false;
+    }
+    startImport();
+    return true;
+}
+
 bool SubsonicFeature::showConnectionDialog() {
     DlgSubsonicConnection dialog(m_pConfig);
     if (dialog.exec() != QDialog::Accepted) {
@@ -824,13 +836,20 @@ TreeItem* SubsonicFeature::importLibrary() {
 
 void SubsonicFeature::onTrackCollectionLoaded() {
     std::unique_ptr<TreeItem> pRoot(m_future.result());
+    // A refresh the user did not ask for (refreshLibrary(), e.g. from an
+    // agent over the MCP bridge) must not steal the library view, pop a
+    // modal dialog, or re-enter activate() — which would start yet
+    // another import because the feature was never activated.
+    const bool userVisible = m_isActivated;
     if (pRoot) {
         m_pSidebarModel->setRootItem(std::move(pRoot));
         m_trackSource->buildIndex();
-        emit showTrackModel(m_pTrackModel);
+        if (userVisible) {
+            emit showTrackModel(m_pTrackModel);
+        }
         qDebug() << "Subsonic library loaded";
     }
-    if (!m_lastImportError.isEmpty()) {
+    if (!m_lastImportError.isEmpty() && userVisible) {
         QMessageBox::warning(
                 nullptr,
                 tr("Error Loading Subsonic Library"),
@@ -843,7 +862,9 @@ void SubsonicFeature::onTrackCollectionLoaded() {
         startCoverFetch(m_pendingCoverArtIds);
         m_pendingCoverArtIds.clear();
     }
-    activate();
+    if (userVisible) {
+        activate();
+    }
 }
 
 void SubsonicFeature::startCoverFetch(const QStringList& coverArtIds) {

@@ -51,6 +51,15 @@ pub const BACKEND_METHODS: &[&str] = &[
     "mixxx.autodj_queue",
     "mixxx.autodj_add",
     "mixxx.autodj_edit",
+    // --- subsonic / navidrome browser -------------------------------
+    "mixxx.subsonic_status",
+    "mixxx.subsonic_refresh",
+    "mixxx.subsonic_browse",
+    "mixxx.subsonic_search",
+    "mixxx.subsonic_playlists",
+    "mixxx.subsonic_playlist",
+    "mixxx.subsonic_load",
+    "mixxx.subsonic_autodj_add",
     // --- raw control surface ----------------------------------------
     "mixxx.get_control",
     "mixxx.set_control",

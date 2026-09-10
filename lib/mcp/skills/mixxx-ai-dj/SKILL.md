@@ -1,6 +1,6 @@
 ---
 name: mixxx-ai-dj
-description: DJ a live set with Mixxx through the mixxx MCP server — pick tracks that mix, beatmatch them, and run transitions on time. Use whenever the user asks to DJ, play music, build or continue a set, take requests, control the decks, or manage the Auto DJ queue in Mixxx.
+description: DJ a live set with Mixxx through the mixxx MCP server — pick tracks that mix, beatmatch them, and run transitions on time, from the local library or a Subsonic/Navidrome server. Use whenever the user asks to DJ, play music, build or continue a set, take requests, control the decks, browse their Subsonic library, or manage the Auto DJ queue in Mixxx.
 ---
 
 # DJing with Mixxx
@@ -122,6 +122,74 @@ kick drums never stack. Bring the outgoing highs down last.
 
 After the fade, stop the deck you left behind (`mixxx_play` with
 `play: false`) and reset its EQ to flat for next time.
+
+## The Subsonic/Navidrome library
+
+If the user's music lives on a Subsonic or Navidrome server, Mixxx browses it
+as a second, separate collection. **Its tracks are not library tracks**: they
+have server-side string ids (`subsonic_id`) instead of numeric `track_id`s,
+and they are not on disk until they have been downloaded. So
+`mixxx_search_library`, `mixxx_load_track`, `mixxx_suggest_next` and
+`mixxx_autodj_add` never see them — use the `mixxx_subsonic_*` tools instead.
+
+Start with `mixxx_subsonic_status`. It never fails, and tells you whether
+there is a Subsonic library at all (`available`, `configured`), how much was
+imported (`track_count`) and whether a refresh is running (`importing`). If
+`available` is false, the local library is all you have; say so rather than
+retrying.
+
+Then navigate the same way the sidebar does:
+
+```
+mixxx_subsonic_browse {}                             → artists
+mixxx_subsonic_browse {artist: "Burial"}             → that artist's albums
+mixxx_subsonic_browse {artist: "Burial", album: "Untrue"}  → its tracks
+mixxx_subsonic_browse {level: "genres"}              → genres, busiest first
+mixxx_subsonic_search  {query: "dub techno", limit: 20}
+mixxx_subsonic_playlists / mixxx_subsonic_playlist {name: "…"}
+```
+
+Browsing by artist and album is the right way to explore an unfamiliar
+remote library; search is for when the user names something specific.
+
+### Loading from the server costs time
+
+Every row carries `cached`. A cached track loads instantly; an uncached one
+has to be downloaded first:
+
+```
+mixxx_subsonic_load {deck: 2, subsonic_id: "…"}
+→ {"cached": false, "status": "downloading"}
+```
+
+The call returns immediately and the deck fills when the download lands.
+**Do not start the deck or fade into it until `mixxx_get_deck` shows the
+track loaded** — check, and give it a few seconds if needed. This is why you
+prepare early: budget a download on top of the usual lead time, and prefer
+cueing up the next track a minute out rather than thirty seconds out.
+
+Load one Subsonic track at a time. Only the most recently requested download
+is loaded into a deck, so a second `mixxx_subsonic_load` issued while the
+first is still downloading leaves that first deck empty (the file is still
+fetched, so a repeat call lands instantly).
+
+Subsonic tracks have no analysed BPM or key until Mixxx has loaded them, so
+`mixxx_suggest_next` cannot plan with them. Pick by genre, album and your own
+knowledge of the material, then beatmatch with `mixxx_sync` once the track is
+on the deck and analysed.
+
+For a hands-off set, `mixxx_subsonic_autodj_add` queues them directly —
+downloads stream in the background and each track is appended in order as it
+becomes ready, so the queue fills in over a few seconds:
+
+```
+mixxx_subsonic_autodj_add {subsonic_ids: ["…", "…", "…"], position: "bottom"}
+```
+
+`mixxx_subsonic_refresh` re-imports from the server; only reach for it if the
+library looks stale or empty while `configured` is true. It runs in the
+background — poll `mixxx_subsonic_status` until `importing` is false instead
+of waiting blindly.
 
 ## Auto DJ
 

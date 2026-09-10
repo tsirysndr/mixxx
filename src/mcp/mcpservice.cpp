@@ -1,6 +1,7 @@
 #include "mcp/mcpservice.h"
 
 #include <QDir>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
@@ -20,6 +21,9 @@
 #include "library/trackcollection.h"
 #include "library/trackcollectionmanager.h"
 #include "library/trackset/crate/crateschema.h"
+#ifdef __SUBSONIC__
+#include "library/subsonic/subsonicfeature.h"
+#endif
 #include "mcp/mcprequesthandler.h"
 #include "mixer/basetrackplayer.h"
 #include "mixer/playerinfo.h"
@@ -317,6 +321,76 @@ QString orderByClause(const QString& sort) {
     return QStringLiteral(" ORDER BY library.artist COLLATE NOCASE, library.title COLLATE NOCASE");
 }
 
+// --- subsonic library queries -------------------------------------------
+
+/// The Subsonic browser keeps its own tables, filled by the library
+/// import. Its rows are not Mixxx library tracks (nothing is downloaded
+/// until a track is loaded), so they are addressed by the server's id and
+/// by their subsonic:// location instead of a track_id.
+const char* const kSubsonicTrackColumns =
+        "subsonic_library.subsonic_id AS subsonic_id, "
+        "subsonic_library.artist AS artist, "
+        "subsonic_library.title AS title, "
+        "subsonic_library.album AS album, "
+        "subsonic_library.album_artist AS album_artist, "
+        "subsonic_library.genre AS genre, "
+        "subsonic_library.year AS year, "
+        "subsonic_library.tracknumber AS tracknumber, "
+        "subsonic_library.duration AS duration, "
+        "subsonic_library.bitrate AS bitrate, "
+        "subsonic_library.location AS location";
+
+/// Servers tag the album artist inconsistently, so browsing by artist
+/// falls back to the track artist rather than losing the rows.
+const char* const kSubsonicArtistExpr =
+        "COALESCE(NULLIF(subsonic_library.album_artist, ''), subsonic_library.artist)";
+
+/// WHERE fragments shared by the Subsonic browse and search queries.
+void appendSubsonicFilters(const QJsonObject& params,
+        QString* pSql,
+        QHash<QString, QVariant>* pBindings) {
+    const QString artist = stringOr(params, "artist");
+    if (!artist.isEmpty()) {
+        *pSql += QStringLiteral(
+                " AND (subsonic_library.artist LIKE :artist"
+                " OR subsonic_library.album_artist LIKE :artist)");
+        pBindings->insert(QStringLiteral(":artist"), likePattern(artist));
+    }
+    const QString album = stringOr(params, "album");
+    if (!album.isEmpty()) {
+        *pSql += QStringLiteral(" AND subsonic_library.album LIKE :album");
+        pBindings->insert(QStringLiteral(":album"), likePattern(album));
+    }
+    const QString genre = stringOr(params, "genre");
+    if (!genre.isEmpty()) {
+        *pSql += QStringLiteral(" AND subsonic_library.genre LIKE :genre");
+        pBindings->insert(QStringLiteral(":genre"), likePattern(genre));
+    }
+    if (hasValue(params, "year_min")) {
+        *pSql += QStringLiteral(" AND subsonic_library.year >= :yearMin");
+        pBindings->insert(QStringLiteral(":yearMin"), numberOr(params, "year_min", 0));
+    }
+    if (hasValue(params, "year_max")) {
+        *pSql += QStringLiteral(" AND subsonic_library.year <= :yearMax");
+        pBindings->insert(QStringLiteral(":yearMax"), numberOr(params, "year_max", 0));
+    }
+}
+
+/// Prepares, binds and executes `sql` on `pQuery`, failing the request
+/// with the database error if it does not run.
+void execSubsonicQuery(QSqlQuery* pQuery,
+        const QString& sql,
+        const QHash<QString, QVariant>& bindings = {}) {
+    pQuery->prepare(sql);
+    for (auto it = bindings.constBegin(); it != bindings.constEnd(); ++it) {
+        pQuery->bindValue(it.key(), it.value());
+    }
+    if (!pQuery->exec()) {
+        fail(QStringLiteral("Subsonic query failed: %1").arg(pQuery->lastError().text()),
+                kErrorInternal);
+    }
+}
+
 PlaylistDAO::AutoDJSendLoc autoDjLocation(const QString& position) {
     if (position == QLatin1String("top")) {
         return PlaylistDAO::AutoDJSendLoc::TOP;
@@ -359,11 +433,13 @@ class ServiceRequestHandler : public mixxxmcp::RequestHandler {
 McpService::McpService(UserSettingsPointer pConfig,
         PlayerManager* pPlayerManager,
         TrackCollectionManager* pTrackCollectionManager,
+        SubsonicFeature* pSubsonicFeature,
         QObject* pParent)
         : QObject(pParent),
           m_pConfig(pConfig),
           m_pPlayerManager(pPlayerManager),
-          m_pTrackCollectionManager(pTrackCollectionManager) {
+          m_pTrackCollectionManager(pTrackCollectionManager),
+          m_pSubsonicFeature(pSubsonicFeature) {
     if (!m_pConfig->getValue(
                 ConfigKey(kConfigGroup, QStringLiteral("Enabled")), true)) {
         qInfo() << "MCP server disabled by [Mcp] Enabled";
@@ -444,6 +520,14 @@ void McpService::registerHandlers() {
             {QStringLiteral("mixxx.autodj_edit"), &McpService::autoDjEdit},
             {QStringLiteral("mixxx.get_control"), &McpService::getControl},
             {QStringLiteral("mixxx.set_control"), &McpService::setControl},
+            {QStringLiteral("mixxx.subsonic_status"), &McpService::subsonicStatus},
+            {QStringLiteral("mixxx.subsonic_refresh"), &McpService::subsonicRefresh},
+            {QStringLiteral("mixxx.subsonic_browse"), &McpService::subsonicBrowse},
+            {QStringLiteral("mixxx.subsonic_search"), &McpService::subsonicSearch},
+            {QStringLiteral("mixxx.subsonic_playlists"), &McpService::subsonicPlaylists},
+            {QStringLiteral("mixxx.subsonic_playlist"), &McpService::subsonicPlaylist},
+            {QStringLiteral("mixxx.subsonic_load"), &McpService::subsonicLoad},
+            {QStringLiteral("mixxx.subsonic_autodj_add"), &McpService::subsonicAutoDjAdd},
     };
 }
 
@@ -1437,3 +1521,509 @@ QJsonValue McpService::setControl(const QJsonObject& params) {
             {QStringLiteral("key"), key},
             {QStringLiteral("value"), ControlObject::get(configKey)}};
 }
+
+// --- subsonic library ----------------------------------------------------
+//
+// The Subsonic browser is an external library: its tracks live on a remote
+// server and only become Mixxx library tracks once they have been
+// downloaded, so these methods address them by the server's id (or their
+// subsonic:// location) and do the downloading themselves. Every method is
+// registered in every build so the tool catalogue does not depend on build
+// flags; mixxx.subsonic_status reports whether the rest of them will work.
+
+SubsonicFeature* McpService::requireSubsonic() const {
+    if (!m_pSubsonicFeature) {
+        fail(QStringLiteral(
+                "no Subsonic library in this session - call "
+                "mixxx.subsonic_status to see why"));
+    }
+    return m_pSubsonicFeature;
+}
+
+QJsonValue McpService::subsonicStatus(const QJsonObject& params) {
+    Q_UNUSED(params);
+    QJsonObject status;
+#ifdef __SUBSONIC__
+    if (!m_pSubsonicFeature) {
+        status.insert(QStringLiteral("available"), false);
+        status.insert(QStringLiteral("reason"),
+                QStringLiteral("the Subsonic library feature is disabled in this session"));
+        return status;
+    }
+    const QString host = m_pConfig->getValueString(
+            ConfigKey(QStringLiteral("[Subsonic]"), QStringLiteral("Host")));
+    status.insert(QStringLiteral("available"), true);
+    status.insert(QStringLiteral("configured"), m_pSubsonicFeature->isConfigured());
+    status.insert(QStringLiteral("importing"), m_pSubsonicFeature->isImporting());
+    status.insert(QStringLiteral("server"), host);
+    status.insert(QStringLiteral("username"),
+            m_pConfig->getValueString(
+                    ConfigKey(QStringLiteral("[Subsonic]"), QStringLiteral("Username"))));
+    const QString importError = m_pSubsonicFeature->lastImportError();
+    status.insert(QStringLiteral("last_import_error"),
+            importError.isEmpty() ? QJsonValue() : QJsonValue(importError));
+
+    QSqlQuery query(m_pTrackCollectionManager->internalCollection()->database());
+    execSubsonicQuery(&query,
+            QStringLiteral("SELECT COUNT(*) AS tracks,"
+                           " COUNT(DISTINCT subsonic_library.album) AS albums,"
+                           " COUNT(DISTINCT %1) AS artists,"
+                           " COUNT(DISTINCT subsonic_library.genre) AS genres"
+                           " FROM subsonic_library")
+                    .arg(QLatin1String(kSubsonicArtistExpr)));
+    if (query.next()) {
+        status.insert(QStringLiteral("track_count"),
+                query.value(QStringLiteral("tracks")).toInt());
+        status.insert(QStringLiteral("album_count"),
+                query.value(QStringLiteral("albums")).toInt());
+        status.insert(QStringLiteral("artist_count"),
+                query.value(QStringLiteral("artists")).toInt());
+        status.insert(QStringLiteral("genre_count"),
+                query.value(QStringLiteral("genres")).toInt());
+    }
+    QSqlQuery playlistQuery(m_pTrackCollectionManager->internalCollection()->database());
+    execSubsonicQuery(&playlistQuery,
+            QStringLiteral("SELECT COUNT(*) FROM subsonic_playlists"));
+    if (playlistQuery.next()) {
+        status.insert(QStringLiteral("playlist_count"), playlistQuery.value(0).toInt());
+    }
+#else
+    status.insert(QStringLiteral("available"), false);
+    status.insert(QStringLiteral("reason"),
+            QStringLiteral("this Mixxx build was compiled without Subsonic support"));
+#endif
+    return status;
+}
+
+#ifdef __SUBSONIC__
+
+QJsonObject McpService::subsonicTrackRowToJson(const QSqlQuery& query) const {
+    const QString location = query.value(QStringLiteral("location")).toString();
+    QJsonObject track;
+    track.insert(QStringLiteral("subsonic_id"),
+            query.value(QStringLiteral("subsonic_id")).toString());
+    track.insert(QStringLiteral("artist"), query.value(QStringLiteral("artist")).toString());
+    track.insert(QStringLiteral("title"), query.value(QStringLiteral("title")).toString());
+    track.insert(QStringLiteral("album"), query.value(QStringLiteral("album")).toString());
+    track.insert(QStringLiteral("album_artist"),
+            query.value(QStringLiteral("album_artist")).toString());
+    track.insert(QStringLiteral("genre"), query.value(QStringLiteral("genre")).toString());
+    track.insert(QStringLiteral("year"), query.value(QStringLiteral("year")).toInt());
+    track.insert(QStringLiteral("track_number"),
+            query.value(QStringLiteral("tracknumber")).toString());
+    track.insert(QStringLiteral("duration_seconds"),
+            query.value(QStringLiteral("duration")).toDouble());
+    track.insert(QStringLiteral("bitrate"), query.value(QStringLiteral("bitrate")).toInt());
+    track.insert(QStringLiteral("location"), location);
+    // Whether loading is instant or has to wait for a download.
+    const QString cachePath = m_pSubsonicFeature
+            ? m_pSubsonicFeature->cachePathForLocation(location)
+            : QString();
+    track.insert(QStringLiteral("cached"),
+            !cachePath.isEmpty() && QFileInfo::exists(cachePath));
+    return track;
+}
+
+QString McpService::subsonicLocation(const QJsonObject& params, const char* idKey) const {
+    const QString location = stringOr(params, "location");
+    if (!location.isEmpty()) {
+        return location;
+    }
+    const QString subsonicId = stringOr(params, idKey);
+    if (subsonicId.isEmpty()) {
+        fail(QStringLiteral("either '%1' or 'location' is required")
+                        .arg(QLatin1String(idKey)));
+    }
+    const QString resolved = m_pSubsonicFeature->locationForSubsonicId(subsonicId);
+    if (resolved.isEmpty()) {
+        fail(QStringLiteral("no imported Subsonic track with id '%1'").arg(subsonicId));
+    }
+    return resolved;
+}
+
+QJsonValue McpService::subsonicRefresh(const QJsonObject& params) {
+    Q_UNUSED(params);
+    SubsonicFeature* pFeature = requireSubsonic();
+    const bool alreadyRunning = pFeature->isImporting();
+    if (!pFeature->refreshLibrary()) {
+        fail(QStringLiteral("no Subsonic server configured; set one up in Mixxx first"));
+    }
+    // The import runs in the background: poll mixxx.subsonic_status rather
+    // than blocking the agent here.
+    return QJsonObject{{QStringLiteral("ok"), true},
+            {QStringLiteral("importing"), true},
+            {QStringLiteral("already_running"), alreadyRunning}};
+}
+
+QJsonValue McpService::subsonicBrowse(const QJsonObject& params) {
+    requireSubsonic();
+    const QSqlDatabase database = m_pTrackCollectionManager->internalCollection()->database();
+    const int limit = std::clamp(numberOr(params, "limit", 100), 1, 500);
+    const int offset = std::max(0, numberOr(params, "offset", 0));
+    const QString artistExpr = QLatin1String(kSubsonicArtistExpr);
+
+    // Without an explicit level, the parameters say where in the tree the
+    // agent is: album given -> its tracks, artist given -> their albums,
+    // nothing given -> the artist list.
+    QString level = stringOr(params, "level");
+    if (level.isEmpty()) {
+        if (!stringOr(params, "album").isEmpty()) {
+            level = QStringLiteral("tracks");
+        } else if (!stringOr(params, "artist").isEmpty()) {
+            level = QStringLiteral("albums");
+        } else {
+            level = QStringLiteral("artists");
+        }
+    }
+
+    QString sql;
+    QHash<QString, QVariant> bindings;
+    if (level == QLatin1String("genres")) {
+        sql = QStringLiteral(
+                "SELECT subsonic_library.genre AS name, COUNT(*) AS tracks,"
+                " COUNT(DISTINCT subsonic_library.album) AS albums"
+                " FROM subsonic_library WHERE subsonic_library.genre <> ''");
+    } else if (level == QLatin1String("artists")) {
+        sql = QStringLiteral(
+                "SELECT %1 AS name, COUNT(*) AS tracks,"
+                " COUNT(DISTINCT subsonic_library.album) AS albums"
+                " FROM subsonic_library WHERE %1 <> ''")
+                      .arg(artistExpr);
+    } else if (level == QLatin1String("albums")) {
+        sql = QStringLiteral(
+                "SELECT subsonic_library.album AS name, %1 AS artist,"
+                " MAX(subsonic_library.year) AS year, COUNT(*) AS tracks,"
+                " SUM(subsonic_library.duration) AS duration"
+                " FROM subsonic_library WHERE subsonic_library.album <> ''")
+                      .arg(artistExpr);
+    } else if (level == QLatin1String("tracks")) {
+        sql = QStringLiteral("SELECT %1 FROM subsonic_library WHERE 1 = 1")
+                      .arg(QLatin1String(kSubsonicTrackColumns));
+    } else {
+        fail(QStringLiteral("unknown level '%1' (use genres, artists, albums or tracks)")
+                        .arg(level));
+    }
+
+    appendSubsonicFilters(params, &sql, &bindings);
+
+    if (level == QLatin1String("genres")) {
+        sql += QStringLiteral(" GROUP BY subsonic_library.genre COLLATE NOCASE"
+                              " ORDER BY tracks DESC, name COLLATE NOCASE");
+    } else if (level == QLatin1String("artists")) {
+        sql += QStringLiteral(" GROUP BY %1 COLLATE NOCASE ORDER BY name COLLATE NOCASE")
+                       .arg(artistExpr);
+    } else if (level == QLatin1String("albums")) {
+        sql += QStringLiteral(
+                " GROUP BY subsonic_library.album COLLATE NOCASE, %1 COLLATE NOCASE"
+                " ORDER BY artist COLLATE NOCASE, year, name COLLATE NOCASE")
+                       .arg(artistExpr);
+    } else {
+        sql += QStringLiteral(
+                " ORDER BY %1 COLLATE NOCASE, subsonic_library.album COLLATE NOCASE,"
+                " CAST(subsonic_library.tracknumber AS INTEGER),"
+                " subsonic_library.title COLLATE NOCASE")
+                       .arg(artistExpr);
+    }
+    sql += QStringLiteral(" LIMIT :limit OFFSET :offset");
+    bindings.insert(QStringLiteral(":limit"), limit);
+    bindings.insert(QStringLiteral(":offset"), offset);
+
+    QSqlQuery query(database);
+    execSubsonicQuery(&query, sql, bindings);
+
+    QJsonArray rows;
+    while (query.next()) {
+        if (level == QLatin1String("tracks")) {
+            rows.append(subsonicTrackRowToJson(query));
+            continue;
+        }
+        QJsonObject row{
+                {QStringLiteral("name"), query.value(QStringLiteral("name")).toString()},
+                {QStringLiteral("track_count"),
+                        query.value(QStringLiteral("tracks")).toInt()}};
+        if (level == QLatin1String("albums")) {
+            row.insert(QStringLiteral("artist"),
+                    query.value(QStringLiteral("artist")).toString());
+            row.insert(QStringLiteral("year"), query.value(QStringLiteral("year")).toInt());
+            row.insert(QStringLiteral("duration_seconds"),
+                    query.value(QStringLiteral("duration")).toDouble());
+        } else {
+            row.insert(QStringLiteral("album_count"),
+                    query.value(QStringLiteral("albums")).toInt());
+        }
+        rows.append(row);
+    }
+
+    // Keyed by level so the agent can tell how deep it is without
+    // tracking what it asked for.
+    QJsonObject result{{QStringLiteral("level"), level},
+            {QStringLiteral("count"), static_cast<int>(rows.size())},
+            {QStringLiteral("offset"), offset}};
+    result.insert(level, rows);
+    return result;
+}
+
+QJsonValue McpService::subsonicSearch(const QJsonObject& params) {
+    requireSubsonic();
+    const QSqlDatabase database = m_pTrackCollectionManager->internalCollection()->database();
+    const int limit = std::clamp(numberOr(params, "limit", 25), 1, 200);
+    const int offset = std::max(0, numberOr(params, "offset", 0));
+
+    QString sql = QStringLiteral("SELECT %1 FROM subsonic_library WHERE 1 = 1")
+                          .arg(QLatin1String(kSubsonicTrackColumns));
+    QHash<QString, QVariant> bindings;
+    const QStringList terms = stringOr(params, "query")
+                                      .split(QChar(' '), Qt::SkipEmptyParts);
+    for (int i = 0; i < terms.size(); ++i) {
+        const QString placeholder = QStringLiteral(":term%1").arg(i);
+        sql += QStringLiteral(
+                " AND (subsonic_library.artist LIKE %1"
+                " OR subsonic_library.title LIKE %1"
+                " OR subsonic_library.album LIKE %1"
+                " OR subsonic_library.album_artist LIKE %1"
+                " OR subsonic_library.genre LIKE %1)")
+                       .arg(placeholder);
+        bindings.insert(placeholder, likePattern(terms.at(i)));
+    }
+    appendSubsonicFilters(params, &sql, &bindings);
+
+    const QString sort = stringOr(params, "sort", QStringLiteral("relevance"));
+    if (sort == QLatin1String("title")) {
+        sql += QStringLiteral(" ORDER BY subsonic_library.title COLLATE NOCASE");
+    } else if (sort == QLatin1String("album")) {
+        sql += QStringLiteral(" ORDER BY subsonic_library.album COLLATE NOCASE,"
+                              " CAST(subsonic_library.tracknumber AS INTEGER)");
+    } else if (sort == QLatin1String("year")) {
+        sql += QStringLiteral(" ORDER BY subsonic_library.year DESC");
+    } else if (sort == QLatin1String("duration")) {
+        sql += QStringLiteral(" ORDER BY subsonic_library.duration");
+    } else if (sort == QLatin1String("random")) {
+        sql += QStringLiteral(" ORDER BY RANDOM()");
+    } else {
+        sql += QStringLiteral(" ORDER BY %1 COLLATE NOCASE,"
+                              " subsonic_library.album COLLATE NOCASE,"
+                              " CAST(subsonic_library.tracknumber AS INTEGER)")
+                       .arg(QLatin1String(kSubsonicArtistExpr));
+    }
+    sql += QStringLiteral(" LIMIT :limit OFFSET :offset");
+    bindings.insert(QStringLiteral(":limit"), limit);
+    bindings.insert(QStringLiteral(":offset"), offset);
+
+    QSqlQuery query(database);
+    execSubsonicQuery(&query, sql, bindings);
+    QJsonArray tracks;
+    while (query.next()) {
+        tracks.append(subsonicTrackRowToJson(query));
+    }
+    return QJsonObject{{QStringLiteral("tracks"), tracks},
+            {QStringLiteral("count"), static_cast<int>(tracks.size())},
+            {QStringLiteral("offset"), offset}};
+}
+
+QJsonValue McpService::subsonicPlaylists(const QJsonObject& params) {
+    Q_UNUSED(params);
+    requireSubsonic();
+    QSqlQuery query(m_pTrackCollectionManager->internalCollection()->database());
+    execSubsonicQuery(&query,
+            QStringLiteral(
+                    "SELECT subsonic_playlists.id AS id,"
+                    " subsonic_playlists.subsonic_id AS subsonic_id,"
+                    " subsonic_playlists.name AS name,"
+                    " (SELECT COUNT(*) FROM subsonic_playlist_tracks"
+                    "  WHERE subsonic_playlist_tracks.playlist_id = subsonic_playlists.id)"
+                    "  AS tracks"
+                    " FROM subsonic_playlists ORDER BY subsonic_playlists.name COLLATE NOCASE"));
+    QJsonArray playlists;
+    while (query.next()) {
+        playlists.append(QJsonObject{
+                {QStringLiteral("playlist_id"), query.value(QStringLiteral("id")).toInt()},
+                {QStringLiteral("subsonic_id"),
+                        query.value(QStringLiteral("subsonic_id")).toString()},
+                {QStringLiteral("name"), query.value(QStringLiteral("name")).toString()},
+                {QStringLiteral("track_count"),
+                        query.value(QStringLiteral("tracks")).toInt()}});
+    }
+    return QJsonObject{{QStringLiteral("playlists"), playlists}};
+}
+
+QJsonValue McpService::subsonicPlaylist(const QJsonObject& params) {
+    requireSubsonic();
+    const QSqlDatabase database = m_pTrackCollectionManager->internalCollection()->database();
+    int playlistId = numberOr(params, "playlist_id", -1);
+    QString playlistName = stringOr(params, "name");
+    if (playlistId < 0) {
+        if (playlistName.isEmpty()) {
+            fail(QStringLiteral("either 'playlist_id' or 'name' is required"));
+        }
+        // Exact (case-insensitive) first, then the best substring match,
+        // so an agent can pass the name it saw in a listing or a shorthand.
+        QSqlQuery lookup(database);
+        execSubsonicQuery(&lookup,
+                QStringLiteral("SELECT id, name FROM subsonic_playlists"
+                               " WHERE name = :name COLLATE NOCASE LIMIT 1"),
+                {{QStringLiteral(":name"), playlistName}});
+        if (!lookup.next()) {
+            QSqlQuery fuzzy(database);
+            execSubsonicQuery(&fuzzy,
+                    QStringLiteral("SELECT id, name FROM subsonic_playlists"
+                                   " WHERE name LIKE :name ORDER BY LENGTH(name) LIMIT 1"),
+                    {{QStringLiteral(":name"), likePattern(playlistName)}});
+            if (!fuzzy.next()) {
+                fail(QStringLiteral("no Subsonic playlist named '%1'").arg(playlistName));
+            }
+            playlistId = fuzzy.value(0).toInt();
+            playlistName = fuzzy.value(1).toString();
+        } else {
+            playlistId = lookup.value(0).toInt();
+            playlistName = lookup.value(1).toString();
+        }
+    } else {
+        QSqlQuery lookup(database);
+        execSubsonicQuery(&lookup,
+                QStringLiteral("SELECT name FROM subsonic_playlists WHERE id = :id"),
+                {{QStringLiteral(":id"), playlistId}});
+        if (!lookup.next()) {
+            fail(QStringLiteral("no Subsonic playlist with id %1").arg(playlistId));
+        }
+        playlistName = lookup.value(0).toString();
+    }
+
+    const int limit = std::clamp(numberOr(params, "limit", 100), 1, 500);
+    QSqlQuery query(database);
+    execSubsonicQuery(&query,
+            QStringLiteral("SELECT %1, subsonic_playlist_tracks.position AS position"
+                           " FROM subsonic_playlist_tracks"
+                           " INNER JOIN subsonic_library"
+                           " ON subsonic_library.id = subsonic_playlist_tracks.track_id"
+                           " WHERE subsonic_playlist_tracks.playlist_id = :id"
+                           " ORDER BY subsonic_playlist_tracks.position LIMIT :limit")
+                    .arg(QLatin1String(kSubsonicTrackColumns)),
+            {{QStringLiteral(":id"), playlistId}, {QStringLiteral(":limit"), limit}});
+    QJsonArray tracks;
+    while (query.next()) {
+        QJsonObject track = subsonicTrackRowToJson(query);
+        track.insert(QStringLiteral("position"),
+                query.value(QStringLiteral("position")).toInt());
+        tracks.append(track);
+    }
+    return QJsonObject{{QStringLiteral("playlist_id"), playlistId},
+            {QStringLiteral("name"), playlistName},
+            {QStringLiteral("tracks"), tracks}};
+}
+
+QJsonValue McpService::subsonicLoad(const QJsonObject& params) {
+    SubsonicFeature* pFeature = requireSubsonic();
+    const QString group = deckGroup(params);
+    const bool playing = controlGet(group, QStringLiteral("play")) > 0.0;
+    if (playing && !boolOr(params, "force", false)) {
+        fail(QStringLiteral("deck is playing; pass force=true to replace the track anyway"));
+    }
+    const QString location = subsonicLocation(params, "subsonic_id");
+
+    QSqlQuery query(m_pTrackCollectionManager->internalCollection()->database());
+    execSubsonicQuery(&query,
+            QStringLiteral("SELECT %1 FROM subsonic_library"
+                           " WHERE subsonic_library.location = :location")
+                    .arg(QLatin1String(kSubsonicTrackColumns)),
+            {{QStringLiteral(":location"), location}});
+    QJsonObject track;
+    if (query.next()) {
+        track = subsonicTrackRowToJson(query);
+    }
+
+    // Loading a track that is not cached yet starts a download and
+    // finishes the load when it lands; it never blocks the UI thread.
+    const bool cached = track.value(QStringLiteral("cached")).toBool();
+    pFeature->loadTrackByLocation(location, group);
+    return QJsonObject{{QStringLiteral("ok"), true},
+            {QStringLiteral("group"), group},
+            {QStringLiteral("cached"), cached},
+            {QStringLiteral("status"),
+                    cached ? QStringLiteral("loaded") : QStringLiteral("downloading")},
+            {QStringLiteral("track"), track}};
+}
+
+QJsonValue McpService::subsonicAutoDjAdd(const QJsonObject& params) {
+    SubsonicFeature* pFeature = requireSubsonic();
+    QStringList locations;
+    const QJsonArray rawIds = params.value(QStringLiteral("subsonic_ids")).toArray();
+    for (const QJsonValue& value : rawIds) {
+        const QString subsonicId = value.toString();
+        if (subsonicId.isEmpty()) {
+            fail(QStringLiteral("'subsonic_ids' must be an array of Subsonic track ids"));
+        }
+        const QString location = pFeature->locationForSubsonicId(subsonicId);
+        if (location.isEmpty()) {
+            fail(QStringLiteral("no imported Subsonic track with id '%1'").arg(subsonicId));
+        }
+        locations.append(location);
+    }
+    for (const QJsonValue& value : params.value(QStringLiteral("locations")).toArray()) {
+        const QString location = value.toString();
+        if (location.isEmpty()) {
+            fail(QStringLiteral("'locations' must be an array of subsonic:// locations"));
+        }
+        locations.append(location);
+    }
+    if (locations.isEmpty()) {
+        fail(QStringLiteral("'subsonic_ids' (or 'locations') must list at least one track"));
+    }
+
+    const QString position = stringOr(params, "position", QStringLiteral("bottom"));
+    // Streams: each track is downloaded in the background and appended in
+    // order as it becomes available, so the queue grows while we return.
+    pFeature->enqueueLocationsToAutoDJ(locations, autoDjLocation(position));
+    return QJsonObject{{QStringLiteral("ok"), true},
+            {QStringLiteral("queued"), static_cast<int>(locations.size())},
+            {QStringLiteral("position"), position},
+            {QStringLiteral("streaming"), true}};
+}
+
+#else // __SUBSONIC__
+
+// Without the feature compiled in there is nothing to browse: the methods
+// stay registered (the tool catalogue is the same in every build) and all
+// of them answer with the same error. mixxx.subsonic_status says so too,
+// without failing, which is what an agent should check first.
+namespace {
+[[noreturn]] void failNoSubsonicBuild() {
+    fail(QStringLiteral("this Mixxx build was compiled without Subsonic support"));
+}
+} // anonymous namespace
+
+QJsonValue McpService::subsonicRefresh(const QJsonObject& params) {
+    Q_UNUSED(params);
+    failNoSubsonicBuild();
+}
+
+QJsonValue McpService::subsonicBrowse(const QJsonObject& params) {
+    Q_UNUSED(params);
+    failNoSubsonicBuild();
+}
+
+QJsonValue McpService::subsonicSearch(const QJsonObject& params) {
+    Q_UNUSED(params);
+    failNoSubsonicBuild();
+}
+
+QJsonValue McpService::subsonicPlaylists(const QJsonObject& params) {
+    Q_UNUSED(params);
+    failNoSubsonicBuild();
+}
+
+QJsonValue McpService::subsonicPlaylist(const QJsonObject& params) {
+    Q_UNUSED(params);
+    failNoSubsonicBuild();
+}
+
+QJsonValue McpService::subsonicLoad(const QJsonObject& params) {
+    Q_UNUSED(params);
+    failNoSubsonicBuild();
+}
+
+QJsonValue McpService::subsonicAutoDjAdd(const QJsonObject& params) {
+    Q_UNUSED(params);
+    failNoSubsonicBuild();
+}
+
+#endif // __SUBSONIC__

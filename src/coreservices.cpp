@@ -650,9 +650,17 @@ void CoreServices::initialize(QApplication* pApp) {
 #ifdef __MCP__
     // Loopback JSON-RPC endpoint an AI agent drives through the mixxx-mcp
     // CLI. Constructed after PlayerManager and the track collection,
-    // which are what its requests act on.
-    m_pMcpService = std::make_shared<McpService>(
-            pConfig, m_pPlayerManager.get(), m_pTrackCollectionManager.get());
+    // which are what its requests act on. The Subsonic feature (if
+    // enabled) backs the mixxx.subsonic_* methods.
+    m_pMcpService = std::make_shared<McpService>(pConfig,
+            m_pPlayerManager.get(),
+            m_pTrackCollectionManager.get(),
+#ifdef __SUBSONIC__
+            m_pLibrary->subsonicFeature()
+#else
+            nullptr
+#endif
+    );
 #endif
 
     OverviewCache* pOverviewCache = OverviewCache::createInstance(pConfig, m_pDbConnectionPool);

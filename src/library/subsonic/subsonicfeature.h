@@ -41,6 +41,19 @@ class SubsonicFeature : public BaseExternalLibraryFeature {
     void bindSidebarWidget(WLibrarySidebar* pSidebarWidget) override;
     TreeItemModel* sidebarModel() const override;
 
+    /// True once a server has been configured (host set).
+    bool isConfigured() const;
+    /// True while a library import/refresh is running in the background.
+    bool isImporting() const;
+    /// Error of the last finished import, empty if it succeeded.
+    QString lastImportError() const {
+        return m_lastImportError;
+    }
+    /// Starts a background refresh of the cached library unless one is
+    /// already running. Returns false if no server is configured — never
+    /// opens the connection dialog, so it is safe to call unattended.
+    bool refreshLibrary();
+
     /// Blocking: downloads the track behind the given
     /// "subsonic://track?id=...&suffix=..." location into the cache unless
     /// it is already cached. Returns the local file path or an empty
@@ -100,7 +113,6 @@ class SubsonicFeature : public BaseExternalLibraryFeature {
     /// use or when the connection settings changed. Returns nullptr if no
     /// server is configured or the configuration is invalid. Thread-safe.
     ClientPtr ensureClient();
-    bool isConfigured() const;
     /// Shows the modal connection dialog; returns true if accepted.
     bool showConnectionDialog();
     void cancelPendingImport();

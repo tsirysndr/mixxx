@@ -383,6 +383,140 @@ pub fn catalog() -> Vec<Tool> {
                 &[],
             ),
         },
+        // ---- subsonic / navidrome browser ------------------------------
+        Tool {
+            name: "mixxx_subsonic_status",
+            description: "Whether this Mixxx has a Subsonic/Navidrome library attached, which \
+                          server it points at, how much of it has been imported and whether a \
+                          refresh is running. Never fails — check it before the other \
+                          mixxx_subsonic_* tools.",
+            method: "mixxx.subsonic_status",
+            schema: no_args(),
+        },
+        Tool {
+            name: "mixxx_subsonic_browse",
+            description: "Walk the Subsonic library the way the sidebar does: no arguments \
+                          lists artists, an artist lists their albums, an album lists its \
+                          tracks in order. 'level' overrides that inference and also reaches \
+                          the genre list. Track rows carry 'cached', i.e. whether loading \
+                          them is instant or has to wait for a download.",
+            method: "mixxx.subsonic_browse",
+            schema: object(
+                json!({
+                    "level": one_of(
+                        "What to list. Inferred from the other arguments when omitted.",
+                        &["genres", "artists", "albums", "tracks"],
+                    ),
+                    "artist": text("Artist (or album artist) to drill into; substring match."),
+                    "album": text("Album to drill into; substring match."),
+                    "genre": text("Restrict to a genre substring."),
+                    "year_min": int("Earliest release year."),
+                    "year_max": int("Latest release year."),
+                    "limit": int("Maximum rows, default 100, max 500."),
+                    "offset": int("Row offset for paging."),
+                }),
+                &[],
+            ),
+        },
+        Tool {
+            name: "mixxx_subsonic_search",
+            description: "Search the imported Subsonic library. Free text matches artist, \
+                          title, album and genre. Returns subsonic_id values for \
+                          mixxx_subsonic_load and mixxx_subsonic_autodj_add — these are not \
+                          Mixxx track ids and do not work with mixxx_load_track.",
+            method: "mixxx.subsonic_search",
+            schema: object(
+                json!({
+                    "query": text("Free text; matches artist, title, album and genre."),
+                    "artist": text("Artist (or album artist) substring."),
+                    "album": text("Album substring."),
+                    "genre": text("Genre substring."),
+                    "year_min": int("Earliest release year."),
+                    "year_max": int("Latest release year."),
+                    "limit": int("Maximum results, default 25, max 200."),
+                    "offset": int("Result offset for paging."),
+                    "sort": one_of(
+                        "Result ordering. Default 'relevance' (artist, then album order).",
+                        &["relevance", "title", "album", "year", "duration", "random"],
+                    ),
+                }),
+                &[],
+            ),
+        },
+        Tool {
+            name: "mixxx_subsonic_playlists",
+            description: "List the playlists that came from the Subsonic server, with their \
+                          track counts.",
+            method: "mixxx.subsonic_playlists",
+            schema: no_args(),
+        },
+        Tool {
+            name: "mixxx_subsonic_playlist",
+            description: "List the tracks of a Subsonic playlist, in playlist order.",
+            method: "mixxx.subsonic_playlist",
+            schema: object(
+                json!({
+                    "playlist_id": int("Playlist id from mixxx_subsonic_playlists."),
+                    "name": text("Playlist name, as an alternative to playlist_id."),
+                    "limit": int("Maximum tracks, default 100, max 500."),
+                }),
+                &[],
+            ),
+        },
+        Tool {
+            name: "mixxx_subsonic_load",
+            description: "Load a Subsonic track into a deck, downloading it first if it is not \
+                          cached yet. Returns immediately: when 'cached' is false the deck is \
+                          filled a moment later, once the download lands, so confirm with \
+                          mixxx_get_deck before starting it. Refuses to clobber a playing deck \
+                          unless force is true.",
+            method: "mixxx.subsonic_load",
+            schema: object(
+                json!({
+                    "deck": deck(),
+                    "subsonic_id": text("Server-side track id from a browse/search result."),
+                    "location": text("The track's subsonic:// location, as an alternative."),
+                    "force": boolean("Allow replacing a track on a playing deck. Default false."),
+                }),
+                &["deck"],
+            ),
+        },
+        Tool {
+            name: "mixxx_subsonic_autodj_add",
+            description: "Queue Subsonic tracks for Auto DJ. The downloads stream in the \
+                          background and each track is appended as soon as it is ready, so the \
+                          call returns before the queue is complete — the normal way to plan a \
+                          set from a remote library.",
+            method: "mixxx.subsonic_autodj_add",
+            schema: object(
+                json!({
+                    "subsonic_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Server-side track ids, in the order they should play.",
+                    },
+                    "locations": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "subsonic:// locations, as an alternative to subsonic_ids.",
+                    },
+                    "position": one_of(
+                        "Where to insert. Default 'bottom'.",
+                        &["top", "bottom", "replace"],
+                    ),
+                }),
+                &[],
+            ),
+        },
+        Tool {
+            name: "mixxx_subsonic_refresh",
+            description: "Re-import the Subsonic library from the server in the background. \
+                          Returns at once; poll mixxx_subsonic_status until 'importing' is \
+                          false. Only needed when the server's content changed during the \
+                          session.",
+            method: "mixxx.subsonic_refresh",
+            schema: no_args(),
+        },
         // ---- auto dj ---------------------------------------------------
         Tool {
             name: "mixxx_autodj",

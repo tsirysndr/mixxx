@@ -155,6 +155,9 @@ ln -s "$PWD/lib/mcp/skills/mixxx-ai-dj" ~/.claude/skills/mixxx-ai-dj
 | `mixxx_set_loop`, `mixxx_hotcue`, `mixxx_headphone` | Loops, cues, monitoring |
 | `mixxx_search_library`, `mixxx_get_track`, `mixxx_suggest_next` | Library, incl. harmonic/tempo matching |
 | `mixxx_list_playlists`, `mixxx_get_playlist`, `mixxx_list_crates`, `mixxx_get_crate` | Collections |
+| `mixxx_subsonic_status`, `mixxx_subsonic_browse`, `mixxx_subsonic_search` | Subsonic/Navidrome browser: artists → albums → tracks |
+| `mixxx_subsonic_playlists`, `mixxx_subsonic_playlist` | Playlists from the Subsonic server |
+| `mixxx_subsonic_load`, `mixxx_subsonic_autodj_add`, `mixxx_subsonic_refresh` | Stream a remote track to a deck / the queue, re-import |
 | `mixxx_autodj`, `mixxx_autodj_queue`, `mixxx_autodj_add`, `mixxx_autodj_edit` | Auto DJ |
 | `mixxx_get_control`, `mixxx_set_control` | Any Mixxx control object |
 | `mixxx_wait_until`, `mixxx_wait_event`, `mixxx_crossfade` | Timing and timed fades |
@@ -162,6 +165,13 @@ ln -s "$PWD/lib/mcp/skills/mixxx-ai-dj" ~/.claude/skills/mixxx-ai-dj
 `mixxx_wait_until`, `mixxx_wait_event` and `mixxx_crossfade` are executed by
 the server process, not by Mixxx, so waiting and fading never hold up the
 audio thread or the UI.
+
+The `mixxx_subsonic_*` tools are a second, separate collection: their tracks
+carry the server's string `subsonic_id`, not a Mixxx `track_id`, and they are
+downloaded on demand — so `mixxx_subsonic_load` returns before the deck is
+filled when `cached` is false. They are registered in every build;
+`mixxx_subsonic_status` reports whether the Subsonic feature is actually
+there (`-DSUBSONIC=ON`, a server configured) instead of failing.
 
 ## Configuration
 
